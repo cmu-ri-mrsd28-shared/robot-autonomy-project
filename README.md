@@ -2,7 +2,7 @@
 
 A MuJoCo / robosuite simulation of a Franka catching a table-tennis ball in a 3D-printed box. The gripper holds the box handle; a ballistic predictor and inverse-kinematics controller are augmented by a CrossQ residual policy.
 
-**Simulation only.** This project has no camera tracker, calibration routine, real robot connection, or hardware-ready controller. Do not run the simulated torque controller on hardware.
+**Robot control runs in simulation.** The standalone RealSense D435 tracker reports ball position and velocity in camera coordinates. Connecting those estimates to a physical Franka requires camera-to-base calibration and a hardware control adapter. Use the simulated torque controller only in MuJoCo.
 
 ## Latest model and results
 
@@ -29,7 +29,7 @@ The offline video renderer also requires `ffmpeg` on `PATH`. Lock files record p
 
 ## Camera tracking
 
-For camera requirements, model inputs and implementation instructions, see [Camera implementation guide](docs/CAMERA_IMPLEMENTATION.md).
+Use `check_camera.py` to inspect the RealSense streams and `track_ball.py` to track a white table-tennis ball. The [camera implementation guide](docs/CAMERA_IMPLEMENTATION.md) describes the planned calibration and controller integration.
 
 ### RealSense D435 terminal check
 
@@ -64,7 +64,7 @@ for supported environments.
 ### Track a white table-tennis ball
 
 ```sh
-python scripts/track_ball.py --preview
+python -B scripts/track_ball.py --preview --every-frame --seconds 10
 ```
 
 The tracker requests 640 × 480 RGB and depth at 60 fps over USB 3. It prints
@@ -77,16 +77,16 @@ valid camera-frame XYZ estimate. A yellow circle indicates a 2D detection with
 unusable depth or timing. The tracker accepts surface depths from 0.3 to 3 m.
 The terminal prints the camera timestamp, pixel center, and XYZ in meters
 when available, or a reason the depth estimate was rejected. Use `--every-frame`
-to log every fresh pair during a throw, `--brightness` to adjust the detection
-threshold, or `--seconds 10` for a timed run. Press `q` or Esc to exit the
-preview.
+to log each fresh pair and `--brightness` to adjust the detection threshold.
+Omit `--seconds` for a continuous preview. Press `q` or Esc to exit.
 
 Position and velocity use the D435 optical frame, with axes pointing right,
 down, and forward. After at least four valid positions over at least 45 ms,
 the tracker fits velocity in m/s from the most recent 150 ms of capture times.
 It restarts the fit after a gap longer than 75 ms or when positions disagree
 with the fit by more than 3 cm. `valid=True` means the current XYZ is usable.
-Velocity can still be unavailable while the fit warms up.
+`velocity=unavailable` means the tracker is still gathering consistent
+measurements for the fit.
 
 When velocity is available, the terminal also prints a 50 ms straight-line
 look-ahead in the camera frame. The ballistic prediction of where the ball
