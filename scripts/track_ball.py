@@ -1,6 +1,7 @@
-"""Preview a moving white table-tennis ball and print its D435 camera-frame position."""
+"""Track a moving white table-tennis ball in the D435 camera frame."""
 
 import argparse
+from collections import deque
 from dataclasses import dataclass
 import math
 import os
@@ -12,6 +13,12 @@ from check_camera import camera_session, print_stream_profiles, rgb_depth_skew_m
 
 BALL_RADIUS_M = 0.020
 WINDOW = "D435 white-ball tracker"
+MOTION_WINDOW_MS = 150
+MAX_SAMPLE_GAP_MS = 75
+MIN_VELOCITY_SAMPLES = 4
+MIN_VELOCITY_SPAN_MS = 45
+MAX_FIT_ERROR_M = 0.030
+LOOKAHEAD_MS = 50
 
 
 @dataclass(frozen=True)
@@ -21,6 +28,52 @@ class Detection:
     u: int
     v: int
     radius: float
+
+
+class MotionHistory:
+    """Fit camera-frame velocity to recent 3D detections from the current track."""
+
+    def __init__(self):
+        self.samples = deque()
+
+    def update(self, np, timestamp_ms, position):
+        """Return a velocity in m/s when the latest positions support a fit."""
+        if not math.isfinite(timestamp_ms):
+            self.samples.clear()
+            return None
+
+        if self.samples:
+            elapsed_ms = timestamp_ms - self.samples[-1][0]
+            if elapsed_ms < 0 or elapsed_ms > MAX_SAMPLE_GAP_MS:
+                # Start a new fit after a clock reset or a tracking gap.
+                self.samples.clear()
+            elif elapsed_ms == 0:
+                return None
+
+        if position is None or not np.isfinite(position).all():
+            return None
+        self.samples.append((timestamp_ms, position))
+        while timestamp_ms - self.samples[0][0] > MOTION_WINDOW_MS:
+            self.samples.popleft()
+        if (
+            len(self.samples) < MIN_VELOCITY_SAMPLES
+            or timestamp_ms - self.samples[0][0] < MIN_VELOCITY_SPAN_MS
+        ):
+            return None
+
+        # Use capture times in seconds relative to the latest frame. Taking the
+        # slope of a fit across several positions smooths noisy depth readings.
+        elapsed_s = np.array([(t - timestamp_ms) / 1000 for t, _ in self.samples])
+        positions = np.stack([point for _, point in self.samples])
+        design = np.column_stack((elapsed_s, np.ones_like(elapsed_s)))
+        coefficients = np.linalg.lstsq(design, positions, rcond=None)[0]
+        errors = np.linalg.norm(positions - design @ coefficients, axis=1)
+        if errors.max() > MAX_FIT_ERROR_M:
+            # A bounce or a false detection can break the straight-line fit.
+            self.samples.clear()
+            self.samples.append((timestamp_ms, position))
+            return None
+        return coefficients[0]
 
 
 def detect_ball(cv2, np, image, gray, previous_gray, brightness):
@@ -97,30 +150,30 @@ def estimate_position(rs, np, depth, ball):
 
 
 def describe_detection(rs, np, align, frames, color, depth, ball, max_skew_ms):
-    """Check capture timing, estimate XYZ, and format the result for display."""
+    """Return numeric camera-frame XYZ and a message for the preview."""
     if ball is None:
-        return False, "ball=not detected"
+        return None, "ball=not detected"
 
     # Alignment fixes pixel coordinates only. The moving ball must also have
     # been at nearly the same position at both capture times.
     pixel = f"pixel=({ball.u}, {ball.v})"
     skew_ms = rgb_depth_skew_ms(rs, color, depth)
     if skew_ms is None:
-        return False, f"{pixel} depth=invalid | RGB-depth timing unavailable | skew=unavailable"
+        return None, f"{pixel} depth=invalid | RGB-depth timing unavailable | skew=unavailable"
     timing = f"skew={skew_ms:.1f} ms"
     if skew_ms > max_skew_ms:
-        return False, f"{pixel} depth=invalid | RGB-depth skew exceeds limit | {timing}"
+        return None, f"{pixel} depth=invalid | RGB-depth skew exceeds limit | {timing}"
 
     aligned_frames = align.process(frames)
     aligned_depth = aligned_frames.get_depth_frame()
     if not aligned_depth:
-        return False, f"{pixel} depth=invalid | aligned depth unavailable | {timing}"
+        return None, f"{pixel} depth=invalid | aligned depth unavailable | {timing}"
     position, rejection = estimate_position(rs, np, aligned_depth, ball)
     if position is None:
-        return False, f"{pixel} depth=invalid | {rejection} | {timing}"
+        return None, f"{pixel} depth=invalid | {rejection} | {timing}"
 
     x, y, z = position
-    return True, f"{pixel} XYZ=({x:+.3f}, {y:+.3f}, {z:.3f}) m | {timing}"
+    return position, f"{pixel} XYZ=({x:+.3f}, {y:+.3f}, {z:.3f}) m | {timing}"
 
 
 def show_detection(cv2, image, ball, valid, status):
@@ -145,6 +198,7 @@ def track(rs, cv2, np, pipeline, args):
     """Process fresh frame pairs and display the detection and its measured depth."""
     align = rs.align(rs.stream.color)
     previous_gray = None
+    motion_history = MotionHistory()
     started = last_pair = time.monotonic()
     first_pair = None
     pair_count = 0
@@ -181,16 +235,32 @@ def track(rs, cv2, np, pipeline, args):
         ball = detect_ball(cv2, np, image, gray, previous_gray, args.brightness)
         previous_gray = gray
         timestamp_ms = color.get_timestamp()
-        valid, status = describe_detection(
+        position, status = describe_detection(
             rs, np, align, frames, color, depth, ball, args.max_skew_ms
         )
+        velocity = motion_history.update(np, timestamp_ms, position)
+        motion = "velocity=unavailable"
+        if velocity is not None:
+            vx, vy, vz = velocity
+            # Short look-ahead only. The ballistic catch predictor needs a
+            # calibrated gravity direction and box opening in the Franka frame.
+            fx, fy, fz = position + velocity * (LOOKAHEAD_MS / 1000)
+            motion = (
+                f"velocity=({vx:+.2f}, {vy:+.2f}, {vz:+.2f}) m/s | "
+                f"linear XYZ +{LOOKAHEAD_MS} ms=({fx:+.3f}, {fy:+.3f}, {fz:.3f}) m"
+            )
 
         # The detector runs on every fresh pair. This only limits terminal output.
         if args.every_frame or now - last_report >= 0.1 or finished:
-            print(f"t={timestamp_ms:.1f} ms | valid={valid} | {status}", flush=True)
+            message = f"t={timestamp_ms:.1f} ms | valid={position is not None} | {status}"
+            if position is not None:
+                message += f" | {motion}"
+            print(message, flush=True)
             last_report = now
 
-        if args.preview and not show_detection(cv2, image, ball, valid, status):
+        if args.preview and not show_detection(
+            cv2, image, ball, position is not None, status
+        ):
             break
         if finished:
             break

@@ -81,13 +81,22 @@ to log every fresh pair during a throw, `--brightness` to adjust the detection
 threshold, or `--seconds 10` for a timed run. Press `q` or Esc to exit the
 preview.
 
-The XYZ axes point right, down, and forward from the camera. This first pass
-reports position in the camera frame. It has no robot calibration or velocity
-estimate.
+Position and velocity use the D435 optical frame, with axes pointing right,
+down, and forward. After at least four valid positions over at least 45 ms,
+the tracker fits velocity in m/s from the most recent 150 ms of capture times.
+It restarts the fit after a gap longer than 75 ms or when positions disagree
+with the fit by more than 3 cm. `valid=True` means the current XYZ is usable.
+Velocity can still be unavailable while the fit warms up.
+
+When velocity is available, the terminal also prints a 50 ms straight-line
+look-ahead in the camera frame. The ballistic prediction of where the ball
+crosses the box opening will use the camera-to-Franka calibration and the
+opening height.
 
 To follow the code, start with `track()` in [track_ball.py](scripts/track_ball.py).
 It reads each fresh pair, calls `detect_ball()` for the 2D candidate, then calls
 `describe_detection()` to check timing and recover XYZ from aligned depth.
+`MotionHistory` fits velocity from the valid timestamped positions.
 [check_camera.py](scripts/check_camera.py) owns the shared camera startup and
 cleanup and can also be run by itself to inspect the raw streams.
 
