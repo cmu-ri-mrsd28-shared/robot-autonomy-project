@@ -61,6 +61,36 @@ The Python package needs a compatible wheel for your platform. See the
 [RealSense Python SDK installation guide](https://github.com/realsenseai/librealsense/blob/master/wrappers/python/readme.md)
 for supported environments.
 
+### Track a white table-tennis ball
+
+```sh
+python scripts/track_ball.py --preview
+```
+
+The tracker requests 640 × 480 RGB and depth at 60 fps over USB 3. It prints
+the active profiles and measured rate of fresh RGB-D pairs at normal exit.
+Use `--fps 30` if the camera or connection cannot sustain 60 fps.
+
+Keep the camera fixed and move the ball against a darker background. The
+tracker looks for a bright, moving, round region. A green circle indicates a
+valid camera-frame XYZ estimate. A yellow circle indicates a 2D detection with
+unusable depth or timing. The tracker accepts surface depths from 0.3 to 3 m.
+The terminal prints the camera timestamp, pixel center, and XYZ in meters
+when available, or a reason the depth estimate was rejected. Use `--every-frame`
+to log every fresh pair during a throw, `--brightness` to adjust the detection
+threshold, or `--seconds 10` for a timed run. Press `q` or Esc to exit the
+preview.
+
+The XYZ axes point right, down, and forward from the camera. This first pass
+reports position in the camera frame. It has no robot calibration or velocity
+estimate.
+
+To follow the code, start with `track()` in [track_ball.py](scripts/track_ball.py).
+It reads each fresh pair, calls `detect_ball()` for the 2D candidate, then calls
+`describe_detection()` to check timing and recover XYZ from aligned depth.
+[check_camera.py](scripts/check_camera.py) owns the shared camera startup and
+cleanup and can also be run by itself to inspect the raw streams.
+
 ## Interface
 
 `catchbox/learning/environment.py` constructs the 60-value normalized observation and applies the model's seven bounded residual corrections. `catchbox/learning/trajectory.py` predicts the ballistic intercept. `catchbox/sim.py` constructs the robot, box and simulation; `catchbox/learning/train.py` contains training and evaluation routines.
