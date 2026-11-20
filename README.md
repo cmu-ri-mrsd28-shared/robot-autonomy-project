@@ -31,6 +31,36 @@ The offline video renderer also requires `ffmpeg` on `PATH`. Lock files record p
 
 For camera requirements, model inputs and implementation instructions, see [Camera implementation guide](docs/CAMERA_IMPLEMENTATION.md).
 
+### RealSense D435 terminal check
+
+Use Python 3.11 or 3.12 in a camera-only virtual environment. Connect the camera
+to a USB 3 port and run these commands from the repository root:
+
+```sh
+python3 -m venv ~/.venvs/catchbox-camera
+source ~/.venvs/catchbox-camera/bin/activate
+python -m pip install -r requirements-camera.txt
+python scripts/check_camera.py --seconds 10
+python scripts/check_camera.py --preview
+```
+
+The script prints the device and active stream profiles, then reports paired
+frame rate and median depth in a 5 × 5 patch at the center of the RGB image.
+Point the camera at a flat target and check that the reading follows a known
+change in distance. Zero depth pixels are skipped. RGB–depth timestamp skew is
+reported when both frames use the SDK's global timestamp domain. Omit
+`--seconds` to run until Ctrl+C.
+
+With `--preview`, a window shows RGB on the left and colorized depth aligned
+to RGB on the right. Black areas in the depth view have no valid depth. Press
+`q` or Esc in the window to stop. The terminal readings continue during preview.
+
+On Linux, if USB enumeration sees the camera but the SDK cannot access it,
+check the [RealSense Linux device permissions and udev instructions](https://github.com/realsenseai/librealsense/blob/master/doc/distribution_linux.md).
+The Python package needs a compatible wheel for your platform. See the
+[RealSense Python SDK installation guide](https://github.com/realsenseai/librealsense/blob/master/wrappers/python/readme.md)
+for supported environments.
+
 ## Interface
 
 `catchbox/learning/environment.py` constructs the 60-value normalized observation and applies the model's seven bounded residual corrections. `catchbox/learning/trajectory.py` predicts the ballistic intercept. `catchbox/sim.py` constructs the robot, box and simulation; `catchbox/learning/train.py` contains training and evaluation routines.
