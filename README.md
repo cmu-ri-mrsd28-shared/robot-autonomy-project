@@ -2,7 +2,7 @@
 
 A MuJoCo / robosuite simulation of a Franka catching a table-tennis ball in a 3D-printed box. The gripper holds the box handle; a ballistic predictor and inverse-kinematics controller are augmented by a CrossQ residual policy.
 
-**Simulation only.** This project has no camera tracker, calibration routine, real robot connection, or hardware-ready controller. Do not run the simulated torque controller on hardware.
+**Robot control runs in simulation.** The standalone RealSense D435 tracker reports ball position and velocity in camera coordinates. Connecting those estimates to a physical Franka requires camera-to-base calibration and a hardware control adapter. Use the simulated torque controller only in MuJoCo.
 
 ## Latest model and results
 
@@ -29,7 +29,76 @@ The offline video renderer also requires `ffmpeg` on `PATH`. Lock files record p
 
 ## Camera tracking
 
-For camera requirements, model inputs and implementation instructions, see [Camera implementation guide](docs/CAMERA_IMPLEMENTATION.md).
+Use `check_camera.py` to inspect the RealSense streams and `track_ball.py` to track a white table-tennis ball. The [camera implementation guide](docs/CAMERA_IMPLEMENTATION.md) describes the planned calibration and controller integration.
+
+### RealSense D435 terminal check
+
+Use Python 3.11 or 3.12 in a camera-only virtual environment. Connect the camera
+to a USB 3 port and run these commands from the repository root:
+
+```sh
+python3 -m venv ~/.venvs/catchbox-camera
+source ~/.venvs/catchbox-camera/bin/activate
+python -m pip install -r requirements-camera.txt
+python scripts/check_camera.py --seconds 10
+python scripts/check_camera.py --preview
+```
+
+The script prints the device and active stream profiles, then reports paired
+frame rate and median depth in a 5 × 5 patch at the center of the RGB image.
+Point the camera at a flat target and check that the reading follows a known
+change in distance. Zero depth pixels are skipped. RGB–depth timestamp skew is
+reported when both frames use the SDK's global timestamp domain. Omit
+`--seconds` to run until Ctrl+C.
+
+With `--preview`, a window shows RGB on the left and colorized depth aligned
+to RGB on the right. Black areas in the depth view have no valid depth. Press
+`q` or Esc in the window to stop. The terminal readings continue during preview.
+
+On Linux, if USB enumeration sees the camera but the SDK cannot access it,
+check the [RealSense Linux device permissions and udev instructions](https://github.com/realsenseai/librealsense/blob/master/doc/distribution_linux.md).
+The Python package needs a compatible wheel for your platform. See the
+[RealSense Python SDK installation guide](https://github.com/realsenseai/librealsense/blob/master/wrappers/python/readme.md)
+for supported environments.
+
+### Track a white table-tennis ball
+
+```sh
+python -B scripts/track_ball.py --preview --every-frame --seconds 10
+```
+
+The tracker requests 640 × 480 RGB and depth at 60 fps over USB 3. It prints
+the active profiles and measured rate of fresh RGB-D pairs at normal exit.
+Use `--fps 30` if the camera or connection cannot sustain 60 fps.
+
+Keep the camera fixed and move the ball against a darker background. The
+tracker looks for a bright, moving, round region. A green circle indicates a
+valid camera-frame XYZ estimate. A yellow circle indicates a 2D detection with
+unusable depth or timing. The tracker accepts surface depths from 0.3 to 3 m.
+The terminal prints the camera timestamp, pixel center, and XYZ in meters
+when available, or a reason the depth estimate was rejected. Use `--every-frame`
+to log each fresh pair and `--brightness` to adjust the detection threshold.
+Omit `--seconds` for a continuous preview. Press `q` or Esc to exit.
+
+Position and velocity use the D435 optical frame, with axes pointing right,
+down, and forward. After at least four valid positions over at least 45 ms,
+the tracker fits velocity in m/s from the most recent 150 ms of capture times.
+It restarts the fit after a gap longer than 75 ms or when positions disagree
+with the fit by more than 3 cm. `valid=True` means the current XYZ is usable.
+`velocity=unavailable` means the tracker is still gathering consistent
+measurements for the fit.
+
+When velocity is available, the terminal also prints a 50 ms straight-line
+look-ahead in the camera frame. The ballistic prediction of where the ball
+crosses the box opening will use the camera-to-Franka calibration and the
+opening height.
+
+To follow the code, start with `track()` in [track_ball.py](scripts/track_ball.py).
+It reads each fresh pair, calls `detect_ball()` for the 2D candidate, then calls
+`describe_detection()` to check timing and recover XYZ from aligned depth.
+`MotionHistory` fits velocity from the valid timestamped positions.
+[check_camera.py](scripts/check_camera.py) owns the shared camera startup and
+cleanup and can also be run by itself to inspect the raw streams.
 
 ## Interface
 
