@@ -2,7 +2,7 @@
 # python -m catchbox.hardware.calibration --set-origin.
 calibration:
   # Robot frame corresponding to the tool pose reported by FrankaPy; set on the station.
-  tip_link: ""
+  tip_link: "franka_tool"
   # XYZ from that tool frame to the box opening center, in meters; measure and enter once.
   opening_offset_m: []
   # Sphere center XYZ in the robot base frame, in meters; recorded by --set-origin.
