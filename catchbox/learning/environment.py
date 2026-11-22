@@ -5,7 +5,7 @@ import mujoco
 from catchbox.core import Config,Throw,BoxMetrics
 from catchbox.sim import Simulation
 from catchbox.experiments import Retention,setup,rotation_for_normal
-from .trajectory import Predictor,varied_throw,in_workspace,clamp_workspace,launch_prediction
+from .trajectory import Predictor,varied_throw,in_workspace,clamp_workspace,launch_prediction,WORKSPACE_RADIUS_M,PRINTED_BOX_WORKSPACE_RADIUS_M
 
 def impact_follow_offset(time_from_impact, velocity):
     """Bounded anticipation and gentle follow-through around predicted impact."""
@@ -22,10 +22,11 @@ def impact_follow_offset(time_from_impact, velocity):
 class CatchCore:
     dt=.02
     action_dim=7
-    def __init__(self,tool='box',seed=0,training=False,total_steps=150000,record=False,printed_box=False):
-        self.tool=tool;self.cfg=Config(duration=3.5,control_dt=self.dt,box_width=.12 if printed_box else .10 if tool=='box' else .05,box_depth=.12 if printed_box else .10 if tool=='box' else .05,box_height=.09 if printed_box else .05 if tool=='box' else .12,printed_box=printed_box)
+    def __init__(self,tool='box',seed=0,training=False,total_steps=150000,record=False,printed_box=False,printed_box_variant='thin'):
+        self.tool=tool;self.cfg=Config(duration=3.5,control_dt=self.dt,box_width=(.135 if printed_box_variant == "thin" else .12) if printed_box else .10 if tool=='box' else .05,box_depth=(.135 if printed_box_variant == "thin" else .12) if printed_box else .10 if tool=='box' else .05,box_height=(.095 if printed_box_variant == "thin" else .09) if printed_box else .05 if tool=='box' else .12,printed_box=printed_box,printed_box_variant=printed_box_variant)
         self.sim=Simulation(self.cfg) if tool=='box' else setup(tool,self.cfg)
         self.predictor=Predictor();self.rng=np.random.default_rng(seed)
+        self.workspace_radius=PRINTED_BOX_WORKSPACE_RADIUS_M if printed_box and printed_box_variant == "thin" else WORKSPACE_RADIUS_M
         self.training=training;self.total_steps=total_steps;self.steps_seen=0;self.record=record
         self.soft_landing=False
         self.velocity_match=False
@@ -39,28 +40,31 @@ class CatchCore:
         self.height=s.nominal_opening[2]+(self.cfg.radius if self.tool=='paddle' else 0)
         self.rejected=0
         if throw is None:
-            for _ in range(100):
+            # A small spherical workspace rejects more launch candidates. Keep
+            # sampling the same distribution rather than failing after 100 tries.
+            max_attempts=5000 if s.cfg.printed_box else 100
+            for _ in range(max_attempts):
                 origin=s.nominal_opening.copy();origin[2]=self.height
                 candidate,metadata=varied_throw(self.rng,origin,self.level)
                 pt=np.array(metadata['target']);pt[2]-=self.cfg.radius if self.tool=='paddle' else 0
-                if not in_workspace(metadata['target'],self.workspace_center):
+                if not in_workspace(metadata['target'],self.workspace_center,self.workspace_radius):
                     self.rejected+=1;continue
                 release_prediction=launch_prediction(s,candidate,self.height)
-                if not release_prediction.valid or not in_workspace(release_prediction.position,self.workspace_center):
+                if not release_prediction.valid or not in_workspace(release_prediction.position,self.workspace_center,self.workspace_radius):
                     self.rejected+=1;continue
                 q,e=s.inverse_kinematics(pt)
                 move=np.max(abs(q-self.start_q))*1.875/1.5
                 if e<=.003 and move+.04<metadata['flight_s'] and metadata['speed_m_s']<=5:
                     throw,meta=candidate,metadata;break
                 self.rejected+=1
-            else:raise RuntimeError('No feasible training launch')
+            else:raise RuntimeError(f'No feasible training launch after {max_attempts} attempts')
         self.throw=throw;self.meta=meta or {}
         d.qpos[s.ball_q:s.ball_q+3]=throw.position;d.qvel[s.ball_v:s.ball_v+3]=throw.velocity
         if self.tool=='gripper':d.qpos[7:9]=[.04,-.04]
         mujoco.mj_forward(s.model,d)
         pred=self.predictor.predict(s.read(),self.height)
         if not pred.valid:raise ValueError('Launch has no descending intercept')
-        if not in_workspace(pred.position,self.workspace_center):raise ValueError('Predicted landing point is outside the 50 cm workspace')
+        if not in_workspace(pred.position,self.workspace_center,self.workspace_radius):raise ValueError(f'Predicted landing point is outside the {self.workspace_radius:g} m workspace radius')
         self.flight=pred.time_to_contact;self.target=pred.position.copy()
         self.target[2]-=self.cfg.radius if self.tool=='paddle' else 0
         self.goal_q,_=s.inverse_kinematics(self.target)
@@ -129,7 +133,7 @@ class CatchCore:
             pos+=impact_follow_offset(t-self.flight,self.pred.velocity)
         pos[:2]=np.clip(pos[:2],s.nominal_opening[:2]-.23,s.nominal_opening[:2]+.23)
         pos[2]=np.clip(pos[2],s.nominal_opening[2]-.13,s.nominal_opening[2]+.08)
-        pos=clamp_workspace(pos,self.workspace_center)
+        pos=clamp_workspace(pos,self.workspace_center,self.workspace_radius)
         q,_=s.inverse_kinematics(pos,r)
         progress=np.clip(t/self.move_time,0,1);blend=10*progress**3-15*progress**4+6*progress**5
         desired=self.start_q+(q-self.start_q)*blend
@@ -229,12 +233,12 @@ class CatchCore:
                     throw=asdict(self.throw),meta=self.meta,rejected_before_launch=self.rejected)
 
 # Keep physics usable without installing ML dependencies; Gym is only needed to train.
-def gym_env(tool='box',seed=0,training=False,total_steps=150000,printed_box=False):
+def gym_env(tool='box',seed=0,training=False,total_steps=150000,printed_box=False,printed_box_variant='thin'):
     import gymnasium as gym
     class Adapter(gym.Env):
         metadata={'render_modes':[]}
         def __init__(self):
-            self.core=CatchCore(tool,seed,training,total_steps,printed_box=printed_box)
+            self.core=CatchCore(tool,seed,training,total_steps,printed_box=printed_box,printed_box_variant=printed_box_variant)
             self.action_space=gym.spaces.Box(-1.,1.,shape=(7,),dtype=np.float32)
             self.observation_space=gym.spaces.Box(-10.,10.,shape=self.core.observation().shape,dtype=np.float32)
         def reset(self,seed=None,options=None):

@@ -11,12 +11,12 @@ if out.exists() and (any((out/n).exists() for n in ['spec.json','training.jsonl'
     raise RuntimeError('Existing run artifacts; refusing to restart or overwrite')
 root.mkdir(parents=True,exist_ok=True)
 torch.set_num_threads(4);torch.set_num_interop_threads(1)
-args=Namespace(seed=112021,steps=300000,eval_episodes=50,prior_episodes=64,threads=4,printed_box=True,validation_seed=20261202,heldout_seed=20261203)
+args=Namespace(seed=112021,steps=300000,eval_episodes=50,prior_episodes=64,threads=4,printed_box=True,printed_box_variant="original",validation_seed=20261202,heldout_seed=20261203)
 print('Original model initialization; no previous model or replay loaded',flush=True)
 summary=run_task('box',out,args)
 bank=json.loads((out/'heldout-throws.json').read_text())
 # Generate representative baseline clips from the same already-scored throws.
-baseline=evaluate(None,CatchCore('box',printed_box=True),bank,out/'scripted-examples')
+baseline=evaluate(None,CatchCore('box',printed_box=True,printed_box_variant='original'),bank,out/'scripted-examples')
 (root/'summary.json').write_text(json.dumps([summary,{'tool':'paddle','status':'not_started','reason':'Not included'},{'tool':'gripper','status':'not_started','reason':'Not included'}],indent=2))
 parts=[]
 for label,folder in [('Original model','examples'),('Scripted baseline','scripted-examples')]:

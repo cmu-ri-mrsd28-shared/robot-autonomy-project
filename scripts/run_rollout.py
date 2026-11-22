@@ -9,17 +9,23 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from sb3_contrib import CrossQ
 from catchbox.learning.environment import CatchCore
+from catchbox.learning.limited_pose_environment import LimitedPoseCatchCore
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--seed', type=int, default=42, help='Throw seed (default: 42)')
+    parser.add_argument('--model', choices=['thin', 'original'], default='thin', help='Policy to run (default: thin)')
     parser.add_argument('--no-view', action='store_true', help='Run without opening the MuJoCo viewer')
     args = parser.parse_args()
 
-    checkpoint = PROJECT_ROOT / 'artifacts/original-model/box/final_model.zip'
+    if args.model == 'thin':
+        checkpoint = PROJECT_ROOT / 'artifacts/limited-thin-model/final_model.zip'
+        env = LimitedPoseCatchCore(seed=args.seed)
+    else:
+        checkpoint = PROJECT_ROOT / 'artifacts/original-model/box/final_model.zip'
+        env = CatchCore('box', seed=args.seed, printed_box=True, printed_box_variant='original')
     model = CrossQ.load(str(checkpoint), device='cpu')
-    env = CatchCore('box', seed=args.seed, printed_box=True)
     observation = env.reset(seed=args.seed)
     viewer = None
     if not args.no_view:

@@ -10,8 +10,8 @@ from catchbox.video import Renderer
 
 def read(path,default=None):return json.loads(path.read_text()) if path.exists() else default
 
-def video(tool,source,destination,printed_box=False):
-    record=read(source);cfg=Config(duration=3.5,control_dt=.02,box_width=.12 if printed_box else .10 if tool=='box' else .05,box_depth=.12 if printed_box else .10 if tool=='box' else .05,box_height=.09 if printed_box else .05 if tool=='box' else .12,printed_box=printed_box)
+def video(tool,source,destination,printed_box=False,printed_box_variant="original"):
+    record=read(source);cfg=Config(duration=3.5,control_dt=.02,box_width=(.135 if printed_box_variant == "thin" else .12) if printed_box else .10 if tool=='box' else .05,box_depth=(.135 if printed_box_variant == "thin" else .12) if printed_box else .10 if tool=='box' else .05,box_height=(.095 if printed_box_variant == "thin" else .09) if printed_box else .05 if tool=='box' else .12,printed_box=printed_box,printed_box_variant=printed_box_variant)
     sim=Simulation(cfg) if tool=='box' else setup(tool,cfg)
     renderer=Renderer(sim);renderer.main_lookat=[.85,0,.6];renderer.main_scale=260
     destination.parent.mkdir(parents=True,exist_ok=True)
