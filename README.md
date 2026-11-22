@@ -118,3 +118,7 @@ cleanup and can also be run by itself to inspect the raw streams.
 The model outputs three normalized values for the desired box-opening position relative to its fixed start. Restricted IK computes targets for joints 1, 4 and 6; joint 6 compensates for joint 4 to keep the box level. A simulation servo tracks those targets at 1 kHz. The decision interval is 20 ms. The hardware controller, safety layer, and camera-to-robot integration have not been implemented.
 
 For camera integration, see the [camera implementation guide](docs/CAMERA_IMPLEMENTATION.md). The original model's 60-value residual interface is separate and must not be mixed with the current checkpoint.
+
+## Hardware prototype
+
+The [ROS 1 Noetic hardware guide](docs/HARDWARE_ROS1.md) covers origin calibration, restricted IK, the command adapter, and the 1 kHz `ros_control` plugin. This code has not been built or tested on a robot; motion is disabled in its controller configuration. Camera-to-policy integration remains to be implemented.

@@ -1,0 +1,5 @@
+<library path="lib/libcatchbox_franka_control">
+  <class name="catchbox_control/FrankaControl" type="catchbox_control::FrankaControl" base_class_type="controller_interface::ControllerBase">
+    <description>Rate-limited Franka joint-position controller.</description>
+  </class>
+</library>

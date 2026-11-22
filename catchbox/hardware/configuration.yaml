@@ -1,0 +1,20 @@
+# Set the one-time tool frame and offset on the station. Record the origin with
+# python -m catchbox.hardware.calibration --set-origin.
+calibration:
+  # Robot frame corresponding to the tool pose reported by FrankaPy; set on the station.
+  tip_link: ""
+  # XYZ from that tool frame to the box opening center, in meters; measure and enter once.
+  opening_offset_m: []
+  # Sphere center XYZ in the robot base frame, in meters; recorded by --set-origin.
+  origin_xyz_m: []
+  # Seven starting joint angles in radians; recorded automatically by --set-origin.
+  home_joints_rad: []
+
+# Loaded by rosparam under /catchbox_joint_controller. Review before use.
+catchbox_joint_controller:
+  type: catchbox_control/FrankaControl
+  enable_motion: false
+  command_timeout: 0.15
+  max_velocity: 0.1
+  max_acceleration: 0.25
+  max_jerk: 2.0
