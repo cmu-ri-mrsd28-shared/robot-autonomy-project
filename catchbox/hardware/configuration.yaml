@@ -9,6 +9,8 @@ calibration:
   origin_xyz_m: [0.4869837070562427, 0.010546743739530892, 0.19795320227164812]
   # Seven starting joint angles in radians; recorded automatically by --set-origin.
   home_joints_rad: [0.014610958134497495, -0.29511025689359294, 0.007370139104326856, -2.645974195781507, 0.0023260972205963394, 2.3559938603212127, 0.8005809835021694]
+  # Lowest allowed box-opening height in the base frame, meters. Set above the table plus box depth.
+  min_opening_z_m: 0.10
 
 # Loaded by rosparam under /catchbox_joint_controller. Review before use.
 catchbox_joint_controller:

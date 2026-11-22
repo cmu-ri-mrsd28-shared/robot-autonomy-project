@@ -19,21 +19,41 @@ Use a Linux host with ROS 1 Noetic, compatible `franka_ros` and `libfranka`, Mov
 export PYTHONPATH="/path/to/robot-autonomy-project:$PYTHONPATH"
 ```
 
+The Python kinematics need `kdl_parser_py`, `urdf_parser_py` and `PyKDL`. On the station they were installed with:
+
+```sh
+apt install -y ros-noetic-kdl-parser-py ros-noetic-urdfdom-py python3-pykdl
+python3 -c "import PyKDL, kdl_parser_py.urdf, urdf_parser_py.urdf; print('ok')"
+```
+
 The package uses only `catchbox.hardware` and does not require installing the simulator for the ROS adapter. Make sure `/robot_description` contains the actual Panda model, the configured seven-joint chain is ordered from base to tip, and the MoveIt planning scene includes the real box and obstacles. Measure the opening-center offset in the chosen tip frame; do not assume an STL offset is a calibrated grasp.
 
 Review `catchbox/hardware/configuration.yaml` and load it with `rosparam load catchbox/hardware/configuration.yaml`. The controller reads joint position and velocity limits from `/robot_description` (the Panda URDF) and refuses to start if they are missing. The YAML contains conservative speed, acceleration and jerk settings that must be reviewed for your robot; these are not measured calibration values. Configure the controller manager to use the position and Franka state interfaces. Follow your installed `franka_ros`/`libfranka` version's filter and rate-limiter configuration: the `franka::limitRate` API documents that FCI filters must be deactivated for its intended behavior. Confirm controller update timing is 1 kHz; this code accepts targets only when its update period is within 0.5–1.5 ms.
 
-## Capture and preview
+## Capture and FrankaPy checks
 
-First open `catchbox/hardware/configuration.yaml` and set `tip_link` and `opening_offset_m` to the measured box-opening offset in the frame returned by FrankaPy `get_pose()`. That frame must match `tip_link` in the robot URDF. The radius is fixed at 0.2 m.
+First open `catchbox/hardware/configuration.yaml` and set `tip_link` and `opening_offset_m` to the measured box-opening offset in the frame returned by FrankaPy `get_pose()`. That frame must match `tip_link` in the robot URDF. The radius is fixed at 0.2 m. Set `min_opening_z_m` above the table plus the box depth.
 
 ```sh
-# Edit catchbox/hardware/configuration.yaml: tip_link and opening_offset_m
-python -m catchbox.hardware.calibration --set-origin
-python -m catchbox.hardware.calibration --show
+python -m catchbox.hardware.calibration --set-origin   # record center and home joints; no motion
+python -m catchbox.hardware.calibration --show         # print center and 0.2 m edge targets; no motion
 ```
 
-The script runs as ordinary Python and uses `FrankaArm.get_pose()` and `get_joints()` to record the current opening center and home joints. FrankaPy still needs its ROS/robot infrastructure running. Position the robot safely and keep it stationary while recording; pose and joints are separate readings. The script does not move the robot. `--show` previews origin and four sphere-edge coordinates; `--target left --distance 0.03` previews a point 3 cm from the center. Targets are not guaranteed reachable by the restricted joints.
+`--set-origin` uses `FrankaArm.get_pose()` and `get_joints()`. Keep the robot stationary while recording.
+
+Then test motion directly through FrankaPy, before the ROS node. Run the checks in order; each one only after the previous one behaves. They command the physical robot, with no MoveIt collision screening, so keep a hand on the e-stop. Each check prompts before moving (`--yes` skips the prompt).
+
+```sh
+python -m catchbox.hardware.calibration --check1-home    # joint move to recorded home; opening at center
+python -m catchbox.hardware.calibration --check2-small   # 3 cm out and back: left, right, up, down, forward, back
+python -m catchbox.hardware.calibration --check3-steps   # 5, 10, 15, 20 cm out and back in each direction
+python -m catchbox.hardware.calibration --check4-catch   # 10 random points inside the sphere, chained
+python -m catchbox.hardware.calibration --move left --distance 0.05   # home, then one step
+```
+
+Left/right are base-frame +Y/-Y, up/down +Z/-Z, forward/back +X/-X. All moves command the box opening and keep the box orientation from home. Each check starts with a joint move to home. Targets outside the 0.2 m sphere are rejected; check3 skips steps below `min_opening_z_m` and check4 only picks points above it. After every move the script prints the reached opening position and its error.
+
+Options: `--speed` (opening speed in m/s, default 0.05), `--max-distance` (check3 largest step, check4 sphere radius), `--directions left right` (check3 only), `--count` and `--seed` (check4).
 
 The same YAML file is used directly by the ROS calibration script and command adapter. The adapter verifies the recorded center against URDF forward kinematics; fix any mismatch between the reported FrankaPy tool frame, `tip_link`, and the opening offset before moving. Do not commit a local calibration file without review.
 
