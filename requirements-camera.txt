@@ -1,0 +1,4 @@
+# Dependencies for the camera check and preview.
+pyrealsense2==2.59.2.11152
+numpy==1.26.4
+opencv-python==4.11.0.86
