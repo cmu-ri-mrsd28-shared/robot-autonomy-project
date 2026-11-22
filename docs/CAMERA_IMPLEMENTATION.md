@@ -9,7 +9,7 @@ Build a camera subsystem that tracks a flying table-tennis ball and supplies its
 - Deliver estimates to the controller at **50 Hz**, with capture and processing timing exposed so latency and stale frames are detectable. The camera may need a higher frame rate; determine it from measured tracking performance rather than assuming 50 Hz is sufficient.
 - Calibrate the camera-to-robot-base transform and validate 3D error and latency over the intended flight volume, including near the box and under occlusion.
 - Report lost, stale, ambiguous or low-confidence tracking explicitly. Never turn an invalid measurement into a believable zero position.
-- Initially run offline or in observation-only mode. **This repository does not contain a hardware controller, camera tracker, or calibration routine.**
+- Run the tracker in observation-only mode. The paired-point RGB calibration and tracker commands are in the [README](../README.md#report-ball-coordinates-in-the-panda-base-frame).
 
 The current checkpoint receives more than camera data: it also needs robot, box, prediction and controller state. The camera subsystem must not fabricate those other inputs.
 
