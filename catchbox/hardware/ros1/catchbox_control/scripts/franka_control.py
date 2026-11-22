@@ -11,6 +11,7 @@ from sensor_msgs.msg import JointState
 from moveit_msgs.msg import RobotState
 from moveit_msgs.srv import GetStateValidity, GetStateValidityRequest
 from catchbox.hardware.calibration import BASE_LINK, JOINT_NAMES, MOVE_GROUP, WORKSPACE_RADIUS_M, DEFAULT_CONFIG, validate_config
+from catchbox.hardware.idle import select_target, FRESHNESS_SECONDS
 from catchbox.hardware.ik import solve_restricted
 from catchbox.hardware.ros_kinematics import KDLKinematics
 
@@ -25,7 +26,7 @@ class Controller:
             raise ValueError('Invalid calibration or radius; maximum is 0.2 m')
         if np.linalg.norm(self.kin.position(self.home)-self.origin)>.002:
             raise ValueError('Calibration origin does not match FK of recorded home')
-        self.q=None;self.q_time=0;self.goal=None;self.goal_time=0
+        self.q=None;self.q_time=0;self.goal=None;self.goal_time=time.monotonic();self.input_fault=False;self.returning=False
         self.pub=rospy.Publisher('~joint_target',JointState,queue_size=1)
         self.state_check=rospy.ServiceProxy('/check_state_validity',GetStateValidity)
         rospy.wait_for_service('/check_state_validity',timeout=10)
@@ -43,10 +44,10 @@ class Controller:
     def on_target(self,msg):
         p=np.array([msg.point.x,msg.point.y,msg.point.z]);age=(rospy.Time.now()-msg.header.stamp).to_sec()
         if msg.header.frame_id!=self.base or not np.isfinite(p).all() or msg.header.stamp.is_zero() or age<0 or age>.25 or np.linalg.norm(p-self.origin)>self.radius+1e-9:
-            with self.lock:self.goal=None
+            with self.lock:self.goal=None;self.input_fault=True
             rospy.logwarn_throttle(2,'Invalid, stale or out-of-sphere target; rejecting')
             return
-        with self.lock:self.goal=p;self.goal_time=time.monotonic()
+        with self.lock:self.goal=p;self.goal_time=time.monotonic();self.input_fault=False
     def path_valid(self,start,end):
         # Discrete screening, not continuous collision checking or a safety guarantee.
         for f in np.linspace(0,1,21):
@@ -60,17 +61,30 @@ class Controller:
         rate=rospy.Rate(50)
         while not rospy.is_shutdown():
             with self.lock:
-                q=None if self.q is None else self.q.copy();p=None if self.goal is None else self.goal.copy();qt=self.q_time;pt=self.goal_time
-            if q is None or p is None or time.monotonic()-qt>.2 or time.monotonic()-pt>.2:
-                rate.sleep();continue
+                q=None if self.q is None else self.q.copy()
+                goal=None if self.goal is None else self.goal.copy()
+                qt=self.q_time;pt=self.goal_time;fault=self.input_fault
+            now=time.monotonic()
             try:
+                position=None if q is None else self.kin.position(q)
+                mode,p,self.returning=select_target(self.origin,position,goal,now-pt,now-qt,self.returning,fault)
+                if mode=='hold':
+                    rate.sleep();continue
                 ik=solve_restricted(p,self.home,q,self.kin.lower+.01,self.kin.upper-.01,self.kin.position)
                 if not ik.reachable:
                     rospy.logwarn_throttle(2,'Target unreachable under joint restrictions (error %.3f m)',ik.error_m)
                 elif self.path_valid(q,ik.joints):
+                    # IK and MoveIt calls may be slow. Never publish an old target
+                    # after a new target, invalid input, or stale robot state.
                     with self.lock:
-                        still_current=(self.goal is not None and np.array_equal(self.goal,p) and time.monotonic()-self.goal_time<=.2 and time.monotonic()-self.q_time<=.2)
-                    if still_current:
+                        latest_q=None if self.q is None else self.q.copy()
+                        latest_goal=None if self.goal is None else self.goal.copy()
+                        latest_qt=self.q_time;latest_gt=self.goal_time;latest_fault=self.input_fault
+                    now=time.monotonic()
+                    latest_position=None if latest_q is None else self.kin.position(latest_q)
+                    latest_mode,latest_target,_=select_target(self.origin,latest_position,latest_goal,
+                        now-latest_gt,now-latest_qt,self.returning,latest_fault)
+                    if latest_mode==mode and latest_target is not None and np.array_equal(latest_target,p):
                         msg=JointState();msg.header.stamp=rospy.Time.now();msg.name=self.names;msg.position=ik.joints.tolist();self.pub.publish(msg)
                 else:rospy.logwarn_throttle(2,'Joint path failed collision or sphere screening')
             except (ValueError,RuntimeError,rospy.ServiceException) as e:rospy.logerr_throttle(2,'IK/validation failed: %s',e)
