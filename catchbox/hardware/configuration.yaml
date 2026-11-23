@@ -12,16 +12,19 @@ calibration:
   # Lowest allowed box-opening height in the base frame, meters. Set above the table plus box depth.
   min_opening_z_m: 0.04
 
-# Loaded by rosparam under /catchbox_joint_controller. Review before use.
-catchbox_joint_controller:
-  type: catchbox_control/FrankaControl
-  enable_motion: true
-  command_timeout: 0.15
-  max_velocity: 0.1
-  max_acceleration: 0.25
-  max_jerk: 2.0
+# Adapter node (python3 -m catchbox.hardware.adapter), streaming joint targets through FrankaPy.
+adapter:
+  # false: plan and publish what would be sent, without moving the robot.
+  enable_motion: false
+  # Joint targets streamed to FrankaPy per second.
+  rate_hz: 100
+  # Per-joint limits of the streamed commands, rad/s and rad/s^2. Review before raising.
+  max_joint_velocity: 0.3
+  max_joint_acceleration: 1.0
+  # Stop if any measured joint lags the command by more than this, rad.
+  tracking_limit_rad: 0.1
 
-# MoveIt planning scene, added by: rosrun catchbox_control planning_scene.py
+# MoveIt planning scene, added by: python3 -m catchbox.hardware.planning_scene
 planning_scene:
   # Catch box bounds from assets/armbox-thin-meters.STL, in a frame at the opening that is level at home (x forward, z up).
   box_min_m: [-0.12, -0.075, -0.10]

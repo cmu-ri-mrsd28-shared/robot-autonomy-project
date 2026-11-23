@@ -1,47 +1,44 @@
-# Franka hardware prototype: ROS 1 Noetic
+# Franka hardware: FrankaPy + ROS 1
 
-This is a **prototype, not yet validated for robot motion**. It has not been built with Noetic, connected to a Franka or run in Gazebo. Motion is disabled in the controller configuration. A 20 cm command sphere and sampled state checks do not guarantee that the real box or the robot remains in that sphere or avoids collisions. The smoother and the actual robot dynamics can deviate from the checked path. Validate the robot, tool, planning scene, joint limits, stop behavior and collision protection independently before any physical test.
+This is a **prototype, not yet validated for robot motion through the adapter**. The FrankaPy calibration checks have run on the robot; the adapter has only been tested offline against a fake robot. A 20 cm command sphere, a floor height and sampled state checks do not guarantee that the real box or arm stays in that sphere or avoids collisions. Keep a hand on the e-stop.
+
+Everything runs in the lab's Docker container on the User PC, through FrankaPy. FrankaPy's control-PC server (`franka-interface`, started by `start_control_pc.sh`) is the only thing that talks to the robot; nothing here needs franka_ros, a catkin build or a real-time kernel.
 
 ## Components
 
-- `scripts/calibration.py` records a fixed sphere origin from a stationary robot, then previews or sends origin/up/down/left/right opening targets. Left/right are base-frame +Y/-Y; up/down are +Z/-Z. Some targets can be unreachable with the restricted joints.
-- `catchbox/hardware/ik.py` uses a KDL forward-kinematics model of the actual URDF and the calibrated tool offset. It solves for joints 1 and 4, counter-rotates joint 6 as in simulation, and holds joints 2, 3, 5 and 7 at the recorded home. It rejects targets outside a configured residual tolerance. The coupling approximates level box orientation; verify actual orientation and mounting on the robot.
-- `scripts/franka_control.py` receives base-frame opening targets, runs IK outside the realtime loop, screens sampled joint configurations with MoveIt `/check_state_validity`, and sends accepted joint targets. Targets below `min_opening_z_m` are rejected, and so is any path whose sampled opening positions dip below it. This is not continuous path checking. When target messages stop, the last target becomes stale after 0.2 s and the controller requests a stop. After 3 seconds without a target, it requests a return to the recorded center, using the same IK and path checks. This timer also starts when the adapter launches. It stops requesting movement within 1 cm and will not return again unless the opening drifts more than 1.5 cm away. A new target interrupts the return. Invalid targets, stale robot state, or failed checks cause it to stop publishing; the realtime controller requests a rate-limited stop. Motion must be enabled for return-to-center to move the robot. Its 50 Hz loop is a maximum rate; IK and MoveIt latency may be slower.
-- `src/franka_control.cpp` is a ROS 1 `ros_control` plugin, run by Franka's realtime control loop. It consumes joint targets through a realtime buffer and uses `franka::limitRate` with the robot's previous desired joint position, velocity and acceleration. The controller is configured with motion disabled. A command timeout requests a rate-limited stop; this is not an emergency stop. The return-to-center behavior belongs to the Python adapter: if that node dies or loses robot feedback, the realtime controller stops rather than returning.
+- `catchbox/hardware/calibration.py` records the sphere center (the box opening at home) and runs direct FrankaPy motion checks.
+- `catchbox/hardware/panda_kinematics.py` is Panda forward kinematics in NumPy, using Franka's DH parameters and FrankaPy's default tool frame (hand TCP). It reproduces both recorded calibrations to well under 0.1 mm.
+- `catchbox/hardware/ik.py` solves for joints 1 and 4, counter-rotates joint 6 as in simulation, and holds joints 2, 3, 5 and 7 at the recorded home. Only a narrow band around home is reachable this way (from the current home: about ±5 cm left/right, almost nothing straight up or down).
+- `catchbox/hardware/adapter.py` is the ROS node. It receives box-opening targets, solves IK, screens 21 joint configurations along the straight joint-space path (joint limits, 0.2 m sphere, `min_opening_z_m`, FrankaPy virtual walls and, unless `--no-moveit`, MoveIt `/check_state_validity`), and streams accepted joint targets at `rate_hz` to a FrankaPy dynamic joint skill. `limiter.py` turns each accepted goal into small steps within `max_joint_velocity` and `max_joint_acceleration`, so a move from rest follows the checked line.
+  - When target messages stop, the target becomes stale after 0.2 s and the adapter stops where it is. After 3 s without a target it returns to the center with the same checks; it stops returning within 1 cm and restarts only if the opening drifts more than 1.5 cm. A new target interrupts the return.
+  - It refuses to start unless the robot is within 0.05 rad of the recorded home and the home joints reproduce `origin_xyz_m`. It stops and exits if the FrankaPy skill ends or faults, or if any measured joint lags the command by more than `tracking_limit_rad`.
+  - With `enable_motion: false` it does everything except start the skill, and publishes what it would send.
+- `catchbox/hardware/send_target.py` publishes a test target to the adapter for a few seconds.
+- `catchbox/hardware/planning_scene.py` adds the table and the catch box to MoveIt's planning scene.
 
-There is **no camera-to-policy observation adapter or model inference node yet**. The high-level ROS input accepts desired box-opening positions from calibration or a future policy adapter. In simulation the trained policy uses 25 scaled inputs and outputs positions relative to its starting opening; integrating it requires reproducing that contract and aligning calibrated frames. The simulated workspace was centered at the nominal gripper position, whereas this prototype records the **opening** as the sphere origin; these are different points. Resolve this reference difference before policy deployment.
+There is **no camera-to-policy observation adapter or model inference node yet**. The adapter accepts desired box-opening positions from `send_target.py` or a future policy node. In simulation the trained policy uses 25 scaled inputs and outputs positions relative to its starting opening; integrating it requires reproducing that contract and aligning calibrated frames. The simulated workspace was centered at the nominal gripper position, whereas this prototype records the **opening** as the sphere origin; resolve this before policy deployment.
 
-## Build and configure
+## Setup
 
-Use a Linux host with ROS 1 Noetic, compatible `franka_ros` and `libfranka`, MoveIt, PyKDL, `kdl_parser_py`, `urdf_parser_py`, SciPy, NumPy and PyYAML. Place or symlink `catchbox/hardware/ros1/catchbox_control` into a catkin workspace's `src`, build with `catkin_make` or `catkin build`, and source the workspace. Make this repository importable by the same Python used by ROS, for example:
+Start the robot and FrankaPy as in Lab 1 (unlock in Desk at 172.16.0.2 from the Control PC, `roscore`, then `start_control_pc.sh`). In every container terminal:
 
 ```sh
-export PYTHONPATH="/path/to/robot-autonomy-project:$PYTHONPATH"
+cd /home/ros_ws/src/devel_packages/robot-autonomy-project
+export PYTHONPATH=$PWD:$PYTHONPATH
 ```
 
-The Python kinematics need `kdl_parser_py`, `urdf_parser_py` and `PyKDL`. On the station they were installed with:
-
-```sh
-apt install -y ros-noetic-kdl-parser-py ros-noetic-urdfdom-py python3-pykdl
-python3 -c "import PyKDL, kdl_parser_py.urdf, urdf_parser_py.urdf; print('ok')"
-```
-
-The package uses only `catchbox.hardware` and does not require installing the simulator for the ROS adapter. Make sure `/robot_description` contains the actual Panda model, the configured seven-joint chain is ordered from base to tip, and the MoveIt planning scene includes the real box and obstacles. Measure the opening-center offset in the chosen tip frame; do not assume an STL offset is a calibrated grasp.
-
-Review `catchbox/hardware/configuration.yaml` and load it with `rosparam load catchbox/hardware/configuration.yaml`. The controller reads joint position and velocity limits from `/robot_description` (the Panda URDF) and refuses to start if they are missing. The YAML contains conservative speed, acceleration and jerk settings that must be reviewed for your robot; these are not measured calibration values. Configure the controller manager to use the position and Franka state interfaces. Follow your installed `franka_ros`/`libfranka` version's filter and rate-limiter configuration: the `franka::limitRate` API documents that FCI filters must be deactivated for its intended behavior. Confirm controller update timing is 1 kHz; this code accepts targets only when its update period is within 0.5–1.5 ms.
+All settings live in `catchbox/hardware/configuration.yaml`: the `calibration` section (tool offset, center, home joints, floor), the `adapter` section (motion switch, stream rate, joint limits, tracking limit) and the `planning_scene` section.
 
 ## Capture and FrankaPy checks
 
-First open `catchbox/hardware/configuration.yaml` and set `tip_link` and `opening_offset_m` to the measured box-opening offset in the frame returned by FrankaPy `get_pose()`. That frame must match `tip_link` in the robot URDF. The radius is fixed at 0.2 m. Set `min_opening_z_m` above the table plus the box depth.
+Set `opening_offset_m` to the measured box-opening offset in FrankaPy's tool frame (`get_pose()`), and `min_opening_z_m` above the table plus the box depth. The radius is fixed at 0.2 m.
 
 ```sh
 python3 -m catchbox.hardware.calibration --set-origin   # record center and home joints; no motion
 python3 -m catchbox.hardware.calibration --show         # print center and 0.2 m edge targets; no motion
 ```
 
-`--set-origin` uses `FrankaArm.get_pose()` and `get_joints()`. Keep the robot stationary while recording.
-
-Then test motion directly through FrankaPy, before the ROS node. Run the checks in order; each one only after the previous one behaves. They command the physical robot, with no MoveIt collision screening, so keep a hand on the e-stop. Each check prompts before moving (`--yes` skips the prompt).
+Keep the robot stationary while recording. Then test motion directly through FrankaPy. Run the checks in order, each only after the previous one behaves. They have no MoveIt collision screening. Each prompts before moving (`--yes` skips the prompt).
 
 ```sh
 python3 -m catchbox.hardware.calibration --check1-home    # joint move to recorded home; opening at center
@@ -51,38 +48,36 @@ python3 -m catchbox.hardware.calibration --check4-catch   # 10 random points ins
 python3 -m catchbox.hardware.calibration --move left --distance 0.05   # home, then one step
 ```
 
-Left/right are base-frame +Y/-Y, up/down +Z/-Z, forward/back +X/-X. All moves command the box opening and keep the box orientation from home. Each check starts with a joint move to home. Targets outside the 0.2 m sphere are rejected; check3 skips steps below `min_opening_z_m` and check4 only picks points above it. After every move the script prints the reached opening position and its error.
+Left/right are base-frame +Y/-Y, up/down +Z/-Z, forward/back +X/-X. All moves command the box opening and keep the box orientation from home, using FrankaPy's full-arm motion (not the adapter's restricted IK). Targets outside the sphere are rejected; check3 skips steps below `min_opening_z_m` and check4 only picks points above it. After every move the script prints the reached opening position and its error.
 
 Options: `--speed` (opening speed in m/s, default 0.075), `--max-distance` (check3 largest step, check4 sphere radius), `--left`, `--right`, `--up`, `--down`, `--forward`, `--back` to run check3 in only those directions (combine them, e.g. `--left --right`), `--count` and `--seed` (check4).
 
-The same YAML file is used directly by the ROS calibration script and command adapter. The adapter verifies the recorded center against URDF forward kinematics; fix any mismatch between the reported FrankaPy tool frame, `tip_link`, and the opening offset before moving. Do not commit a local calibration file without review.
+## Planning scene (optional during bring-up)
 
-The ROS capture method also uses the same file: `rosrun catchbox_control calibration.py set-origin`. To preview an edge through ROS:
-
-```sh
-rosrun catchbox_control calibration.py move left --distance 0.2
-```
-
-`move origin`, `move up`, `move down`, `move left` and `move right` select tests. Adding `--execute` publishes a target to the ROS command adapter; it is not a direct FrankaPy motion command.
-
-## Planning scene
-
-After `move_group` starts, add the table and the catch box so `/check_state_validity` checks them:
+MoveIt screening needs `move_group` running with the Panda model, which needs `panda_moveit_config`:
 
 ```sh
-rosrun catchbox_control planning_scene.py          # add table + box, then check the home pose
-rosrun catchbox_control planning_scene.py --remove # take them out again
+roslaunch panda_moveit_config move_group.launch load_robot_description:=true
+python3 -m catchbox.hardware.planning_scene            # add table + box, then check the home pose
+python3 -m catchbox.hardware.planning_scene --remove   # take them out again
 ```
 
-Both are simple boxes, configured under `planning_scene:` in `configuration.yaml`. The table is a 2 x 2 m slab with its top at z = 0, since the robot base sits on it; it is attached to `panda_link0` so the base itself does not count as a collision. The catch box is the bounding box of `assets/armbox-thin-meters.STL` plus 1 cm padding, attached to `tip_link` and placed from `opening_offset_m`, assuming the box is level and square to the base at home. The script exits with an error and lists the touching links if the home pose collides. Rerun it whenever `move_group` restarts.
+Both objects are simple boxes, configured under `planning_scene:`. The table is a 2 x 2 m slab with its top at z = 0, since the robot base sits on it; it is attached to `panda_link0` so the base itself does not count as a collision. The catch box is the bounding box of `assets/armbox-thin-meters.STL` plus 1 cm padding, attached to `tip_link` and placed from `opening_offset_m`, assuming the box is level and square to the base at home. The script exits with an error and lists the touching links if the home pose collides. Rerun it whenever `move_group` restarts.
 
-For integration testing, after loading the plugin into the controller manager, run the adapter:
+Without MoveIt, run the adapter with `--no-moveit`; the sphere, floor, joint-limit and FrankaPy virtual-wall checks still apply, but nothing checks the arm or box against the table.
 
-```sh
-rosrun catchbox_control franka_control.py \
-  '~joint_target:=/catchbox_joint_controller/joint_target'
-```
+## Adapter bring-up
 
-It receives `/catchbox_command_adapter/opening_target` as `geometry_msgs/PointStamped` in the configured base frame. `calibration.py move ... --execute` publishes a target for five seconds; the adapter and controller must both be running, configured and enabled for motion. Test with motion disabled and in a realistic simulation first. Do not treat this flag as a substitute for a robot safety system.
+1. Put the robot at home: `python3 -m catchbox.hardware.calibration --check1-home`.
+2. With `adapter.enable_motion: false`, start the adapter and send a target:
 
-The latest model must not be connected to physical motion until its observation encoder, tool transform, target origin, joint coupling, timing, collision checks and stop behavior have been validated end to end.
+   ```sh
+   python3 -m catchbox.hardware.adapter --no-moveit          # or without --no-moveit once MoveIt is up
+   rostopic echo /catchbox_command_adapter/joint_target       # second terminal
+   python3 -m catchbox.hardware.send_target left --distance 0.03 --execute   # third terminal
+   ```
+
+   Joints 1, 4 and 6 should change smoothly, the others stay at home, and the robot does not move.
+3. Set `enable_motion: true`, restart the adapter, and repeat with left/right at 3 cm, then 5 cm. Stop the adapter with Ctrl-C; it ends the FrankaPy skill.
+
+Up/down targets are expected to log "Target unreachable under joint restrictions": the restricted IK only moves joints 1, 4 and 6.

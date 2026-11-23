@@ -121,4 +121,4 @@ For camera integration, see the [camera implementation guide](docs/CAMERA_IMPLEM
 
 ## Hardware prototype
 
-The [ROS 1 Noetic hardware guide](docs/HARDWARE_ROS1.md) covers origin calibration, restricted IK, the command adapter, and the 1 kHz `ros_control` plugin. This code has not been built or tested on a robot; motion is disabled in its controller configuration. Camera-to-policy integration remains to be implemented.
+The [hardware guide](docs/HARDWARE_ROS1.md) covers origin calibration, the FrankaPy motion checks, and the ROS adapter that streams restricted-IK joint targets through FrankaPy. The adapter has not been run on the robot yet; motion is disabled in its configuration. Camera-to-policy integration remains to be implemented.

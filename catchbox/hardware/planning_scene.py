@@ -1,7 +1,6 @@
-#!/usr/bin/env python3
 """Add the table and the catch box to MoveIt's planning scene, then check home.
 
-Run once after move_group is up:  rosrun catchbox_control planning_scene.py
+Run once after move_group is up:  python3 -m catchbox.hardware.planning_scene
 The table is attached to the base link and the box to the tool link, so MoveIt
 ignores their intended contacts but checks them against the rest of the arm.
 """
