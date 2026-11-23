@@ -17,9 +17,9 @@ The earlier 300,000-step seven-output residual model and its original-box result
 ### Run a rollout
 
 ```sh
-python scripts/run_rollout.py                 # MuJoCo viewer, current model
-python scripts/run_rollout.py --no-view       # headless
-python scripts/run_rollout.py --model original  # earlier model and box
+python3 scripts/run_rollout.py                 # MuJoCo viewer, current model
+python3 scripts/run_rollout.py --no-view       # headless
+python3 scripts/run_rollout.py --model original  # earlier model and box
 ```
 
 On macOS, the MuJoCo viewer may require `mjpython scripts/run_rollout.py`. `scripts/train_limited_thin_50k.py` starts a new training run and refuses to overwrite an existing run.
@@ -31,9 +31,9 @@ Requires Python 3.11 or 3.12. From this directory:
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[training]'
-python -m pip install pytest pillow
-python -m pytest -q
+python3 -m pip install -e '.[training]'
+python3 -m pip install pytest pillow
+python3 -m pytest -q
 ```
 
 The offline video renderer also requires `ffmpeg` on `PATH`. Lock files record packages from the original environment and may require adaptation for a different platform.
@@ -50,9 +50,9 @@ to a USB 3 port and run these commands from the repository root:
 ```sh
 python3 -m venv ~/.venvs/catchbox-camera
 source ~/.venvs/catchbox-camera/bin/activate
-python -m pip install -r requirements-camera.txt
-python scripts/check_camera.py --seconds 10
-python scripts/check_camera.py --preview
+python3 -m pip install -r requirements-camera.txt
+python3 scripts/check_camera.py --seconds 10
+python3 scripts/check_camera.py --preview
 ```
 
 The script prints the device and active stream profiles, then reports paired
@@ -75,7 +75,7 @@ for supported environments.
 ### Track a white table-tennis ball
 
 ```sh
-python -B scripts/track_ball.py --preview --every-frame --seconds 10
+python3 -B scripts/track_ball.py --preview --every-frame --seconds 10
 ```
 
 The tracker requests 640 × 480 RGB and depth at 60 fps over USB 3. It prints

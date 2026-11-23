@@ -1,5 +1,5 @@
 # Set the one-time tool frame and offset on the station. Record the origin with
-# python -m catchbox.hardware.calibration --set-origin.
+# python3 -m catchbox.hardware.calibration --set-origin.
 calibration:
   # Robot frame corresponding to the tool pose reported by FrankaPy; set on the station.
   tip_link: "panda_hand_tcp"
@@ -10,7 +10,7 @@ calibration:
   # Seven starting joint angles in radians; recorded automatically by --set-origin.
   home_joints_rad: [0.014610958134497495, -0.29511025689359294, 0.007370139104326856, -2.645974195781507, 0.0023260972205963394, 2.3559938603212127, 0.8005809835021694]
   # Lowest allowed box-opening height in the base frame, meters. Set above the table plus box depth.
-  min_opening_z_m: 0.10
+  min_opening_z_m: 0.04
 
 # Loaded by rosparam under /catchbox_joint_controller. Review before use.
 catchbox_joint_controller:

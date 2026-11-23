@@ -2,14 +2,14 @@
 
 Run from the project folder in the lab's FrankaPy environment:
 
-    python -m catchbox.hardware.calibration --set-origin       # record center; no motion
-    python -m catchbox.hardware.calibration --show             # print test targets; no motion
-    python -m catchbox.hardware.calibration --check1-home      # go to recorded home joints
-    python -m catchbox.hardware.calibration --check2-small     # 3 cm out and back, six directions
-    python -m catchbox.hardware.calibration --check3-steps     # 5/10/15/20 cm out and back
-    python -m catchbox.hardware.calibration --check3-steps --right   # only one direction
-    python -m catchbox.hardware.calibration --check4-catch     # chain random points, no return between
-    python -m catchbox.hardware.calibration --move left --distance 0.05
+    python3 -m catchbox.hardware.calibration --set-origin       # record center; no motion
+    python3 -m catchbox.hardware.calibration --show             # print test targets; no motion
+    python3 -m catchbox.hardware.calibration --check1-home      # go to recorded home joints
+    python3 -m catchbox.hardware.calibration --check2-small     # 3 cm out and back, six directions
+    python3 -m catchbox.hardware.calibration --check3-steps     # 5/10/15/20 cm out and back
+    python3 -m catchbox.hardware.calibration --check3-steps --right   # only one direction
+    python3 -m catchbox.hardware.calibration --check4-catch     # chain random points, no return between
+    python3 -m catchbox.hardware.calibration --move left --distance 0.05
 
 All moves keep the box orientation recorded at home and command the box
 opening, not the tool frame. Every target is checked against the 0.2 m sphere
