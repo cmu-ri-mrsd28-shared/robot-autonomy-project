@@ -20,3 +20,15 @@ catchbox_joint_controller:
   max_velocity: 0.1
   max_acceleration: 0.25
   max_jerk: 2.0
+
+# MoveIt planning scene, added by: rosrun catchbox_control planning_scene.py
+planning_scene:
+  # Catch box bounds from assets/armbox-thin-meters.STL, in a frame at the opening that is level at home (x forward, z up).
+  box_min_m: [-0.12, -0.075, -0.10]
+  box_max_m: [0.075, 0.075, 0.0]
+  # Extra margin added on every side of the box, meters.
+  padding_m: 0.01
+  # The robot base sits on the table, so the table top is at z = 0 in panda_link0.
+  table_top_z_m: 0.0
+  # Table box centered under the base: X, Y, thickness in meters.
+  table_size_m: [2.0, 2.0, 0.1]

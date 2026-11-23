@@ -65,6 +65,17 @@ rosrun catchbox_control calibration.py move left --distance 0.2
 
 `move origin`, `move up`, `move down`, `move left` and `move right` select tests. Adding `--execute` publishes a target to the ROS command adapter; it is not a direct FrankaPy motion command.
 
+## Planning scene
+
+After `move_group` starts, add the table and the catch box so `/check_state_validity` checks them:
+
+```sh
+rosrun catchbox_control planning_scene.py          # add table + box, then check the home pose
+rosrun catchbox_control planning_scene.py --remove # take them out again
+```
+
+Both are simple boxes, configured under `planning_scene:` in `configuration.yaml`. The table is a 2 x 2 m slab with its top at z = 0, since the robot base sits on it; it is attached to `panda_link0` so the base itself does not count as a collision. The catch box is the bounding box of `assets/armbox-thin-meters.STL` plus 1 cm padding, attached to `tip_link` and placed from `opening_offset_m`, assuming the box is level and square to the base at home. The script exits with an error and lists the touching links if the home pose collides. Rerun it whenever `move_group` restarts.
+
 For integration testing, after loading the plugin into the controller manager, run the adapter:
 
 ```sh
