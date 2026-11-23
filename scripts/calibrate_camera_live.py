@@ -9,9 +9,10 @@ How it works, in plain words:
      ball sits on the box, so you do not have to measure that precisely.
   4. Type "solve". The script prints the error at each spot and saves the result.
 
-Afterwards a camera point p_cam (meters, camera frame) converts to the robot base
-frame with:  p_base = R @ p_cam + t, using R and t from the saved JSON file.
-Velocities convert with R only.
+Afterwards the saved JSON uses the same format as calibrate_camera.py, so the
+tracker loads it directly:
+  python -B scripts/track_ball.py --calibration calibration/camera_to_base.json --preview
+A point pair CSV is also saved for calibrate_camera.py to cross-check the fit.
 
 The ball must be still. This script does not move the robot.
 
@@ -37,16 +38,27 @@ import time
 
 import numpy as np
 
+import csv
+
+# Ashutosh's calibrate_camera.py defines the JSON format track_ball.py loads.
+# Importing it keeps the two tools writing the same format.
+from calibrate_camera import (
+    CameraToBase, COORDINATES, SOURCE_FRAME, TARGET_FRAME, load_calibration,
+)
 from track_ball import Detection, estimate_position
 
 
 WINDOW = "Camera calibration: still ball"
 DEFAULT_OUT = Path("calibration/camera_to_base.json")
 DEFAULT_SAMPLES = Path("calibration/camera_samples.json")
-MIN_SAMPLES = 5
+MIN_SAMPLES = 6
 # Turning the wrist at least this much between spots lets the solver find the
 # ball's position on the box. Below it, a measured --ball-offset is required.
 MIN_ROTATION_SPREAD_DEG = 25.0
+# Spots should cover the catching area; warn if any direction spans less.
+MIN_COVERAGE_M = 0.15
+# Reject a spot if the arm moved more than this while it was being recorded.
+MAX_DRIFT_M = 0.002
 
 
 # --------------------------------------------------------------------------
@@ -125,6 +137,23 @@ def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
     r, t = kabsch(cam, target)
     errors = np.linalg.norm(cam @ r.T + t - target, axis=1)
     return r, t, offset, errors
+
+
+def check_errors(camera_points, ee_poses, ball_offset=None):
+    """Leave-one-out error: fit without each spot, then measure that spot.
+
+    This estimates accuracy at places the fit has not seen, which is what
+    matters during a catch. It is always larger than the fit error.
+    """
+    cam = np.asarray(camera_points, float)
+    poses = np.asarray(ee_poses, float)
+    out = []
+    for i in range(len(cam)):
+        keep = np.arange(len(cam)) != i
+        r, t, offset, _ = solve(cam[keep], poses[keep], ball_offset)
+        predicted = poses[i, :3, :3] @ offset + poses[i, :3, 3]
+        out.append(np.linalg.norm(r @ cam[i] + t - predicted))
+    return np.array(out)
 
 
 # --------------------------------------------------------------------------
@@ -276,10 +305,21 @@ def save_json(path, data):
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def report_and_save(samples, args):
-    keep = [s for i, s in enumerate(samples, 1) if i not in set(args.drop or [])]
+def error_stats(errors_m):
+    mm = 1000 * np.asarray(errors_m)
+    return {"count": len(mm), "rms": float(np.sqrt(np.mean(mm**2))), "max": float(mm.max())}
+
+
+def report_and_save(samples, serial, args):
+    """Solve, print a plain-language report, and save the tracker's JSON format."""
+    dropped = set(args.drop or [])
+    numbered = [i for i in range(1, len(samples) + 1) if i not in dropped]
+    keep = [samples[i - 1] for i in numbered]
     if len(keep) < MIN_SAMPLES:
         print(f"Need at least {MIN_SAMPLES} spots to solve (have {len(keep)}).")
+        return False
+    if not serial:
+        print("Camera serial unknown; cannot save a calibration the tracker will accept.")
         return False
     cam = np.array([s["camera_xyz_m"] for s in keep])
     poses = np.array([s["ee_pose_base"] for s in keep])
@@ -291,43 +331,78 @@ def report_and_save(samples, args):
               "the ball position on the box and pass --ball-offset X Y Z.")
         return False
 
-    r, t, offset, errors = solve(cam, poses, offset)
-    print("\nError at each spot (distance between camera and robot after calibration):")
-    numbered = [i for i in range(1, len(samples) + 1) if i not in set(args.drop or [])]
-    for i, e in zip(numbered, errors):
-        flag = "   <-- bad spot? rerun with --drop " + str(i) if e > 2.5 * np.median(errors) and e > 0.01 else ""
-        print(f"  spot {i:2d}: {1000 * e:6.1f} mm{flag}")
-    rms = float(np.sqrt(np.mean(errors**2)))
-    print(f"  average (RMS): {1000 * rms:.1f} mm   worst: {1000 * errors.max():.1f} mm")
-    verdict = ("good" if rms < 0.008 else "usable, but try more spread-out spots"
-               if rms < 0.015 else "poor; check the ball is firmly attached and redo")
-    print(f"  -> {verdict}")
+    r, t, offset, fit = solve(cam, poses, offset)
+    check = check_errors(cam, poses, args.ball_offset)
+    base_points = np.einsum("nij,j->ni", poses[:, :3, :3], offset) + poses[:, :3, 3]
 
-    camera_in_base = t
+    print("\nError at each spot:")
+    print("  fit   = how well this spot agrees with the calibration")
+    print("  check = error when this spot is left out and predicted (real-world accuracy)")
+    bad = np.median(check) * 2.5
+    for i, f, c in zip(numbered, fit, check):
+        flag = f"   <-- bad spot? add --drop {i}" if c > bad and c > 0.01 else ""
+        print(f"  spot {i:2d}: fit {1000 * f:5.1f} mm | check {1000 * c:5.1f} mm{flag}")
+    fit_stats, check_stats = error_stats(fit), error_stats(check)
+    print(f"  fit   RMS {fit_stats['rms']:.1f} mm, worst {fit_stats['max']:.1f} mm")
+    print(f"  check RMS {check_stats['rms']:.1f} mm, worst {check_stats['max']:.1f} mm")
+    rms = check_stats["rms"]
+    verdict = ("GOOD" if rms < 8 else "USABLE; more spread-out spots would help"
+               if rms < 15 else "POOR; check the ball is firmly attached, then redo")
+    print(f"  -> {verdict} (the box opening is about 120 mm wide)")
+
+    span = base_points.max(axis=0) - base_points.min(axis=0)
+    print(f"\nArea covered by spots: x {100 * span[0]:.0f} cm, y {100 * span[1]:.0f} cm, "
+          f"z {100 * span[2]:.0f} cm")
+    narrow = [axis for axis, s in zip("xyz", span) if s < MIN_COVERAGE_M]
+    if narrow:
+        print(f"  Warning: spots span less than {100 * MIN_COVERAGE_M:.0f} cm along "
+              f"{', '.join(narrow)}. Accuracy outside this area will be worse; add spots "
+              "further out in that direction.")
+
     print(f"\nCamera position in robot base frame: "
           f"x={t[0]:+.3f}  y={t[1]:+.3f}  z={t[2]:+.3f} m "
-          f"(distance {np.linalg.norm(t):.3f} m from base)")
+          f"(distance {np.linalg.norm(t):.2f} m from base)")
+    print("  Sanity check: does that roughly match where the tripod really is?")
     print(f"Ball offset on the end-effector frame: "
           f"({offset[0]:+.3f}, {offset[1]:+.3f}, {offset[2]:+.3f}) m"
           f"{' (given)' if args.ball_offset is not None else ' (solved)'}")
 
+    # Same keys as calibrate_camera.py, so track_ball.py --calibration loads it.
+    transform = CameraToBase(r, t)
     result = {
-        "description": "p_base = R @ p_camera + t (meters). Velocity: v_base = R @ v_camera.",
-        "camera_frame": "RealSense D435 color optical frame (x right, y down, z forward)",
-        "base_frame": "Franka base (panda_link0)",
-        "R": r.tolist(),
-        "t": camera_in_base.tolist(),
+        "source_frame": SOURCE_FRAME,
+        "target_frame": TARGET_FRAME,
+        "camera_serial": serial,
+        "translation_units": "m",
+        "rotation": transform.rotation.tolist(),
+        "translation_m": transform.translation.tolist(),
+        "fit_error_mm": fit_stats,
+        "check_error_mm": check_stats,
+        "check_method": "leave-one-out over recorded spots",
+        "made_by": "calibrate_camera_live.py",
         "ball_offset_in_ee_m": offset.tolist(),
         "ball_offset_was_solved": args.ball_offset is None,
-        "rms_error_m": rms,
-        "max_error_m": float(errors.max()),
-        "num_spots": len(keep),
-        "dropped_spots": sorted(set(args.drop or [])),
+        "dropped_spots": sorted(dropped),
         "wrist_rotation_spread_deg": spread,
+        "coverage_m": span.tolist(),
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     save_json(args.out, result)
+    load_calibration(args.out, serial)  # confirm the tracker will accept the file
+
+    # Point pairs in calibrate_camera.py's CSV format, so its fit can verify ours.
+    # That script needs separate check rows; every 4th spot is held out as one.
+    pairs = args.out.with_name(args.out.stem + "_pairs.csv")
+    with pairs.open("w", newline="") as file:
+        writer = csv.writer(file, lineterminator="\n")
+        writer.writerow((*COORDINATES, "set", "spot"))
+        for k, (i, c, b) in enumerate(zip(numbered, cam, base_points)):
+            role = "check" if k % 4 == 3 else "fit"
+            writer.writerow((*np.round(c, 6), *np.round(b, 6), role, i))
+
     print(f"\nSaved calibration to {args.out}")
+    print(f"Saved point pairs to {pairs}")
+    print(f"Use it:  python -B scripts/track_ball.py --calibration {args.out} --preview")
     return True
 
 
@@ -357,13 +432,20 @@ def collect(args):
              "franky": lambda: FrankyPose(args.robot_ip),
              "manual": ManualPose}[args.robot]()
 
-    samples = []
-    if args.samples.exists() and args.resume:
-        samples = json.loads(args.samples.read_text())["samples"]
-        print(f"Resumed {len(samples)} saved spots from {args.samples}")
-
     with camera_session(rs, fps=30) as (pipeline, profile):
         print_stream_profiles(rs, profile)
+        serial = profile.get_device().get_info(rs.camera_info.serial_number)
+        samples = []
+        if args.samples.exists() and args.resume:
+            saved = json.loads(args.samples.read_text())
+            if saved.get("camera_serial") not in (None, serial):
+                raise RuntimeError(f"{args.samples} was recorded with camera "
+                                   f"{saved['camera_serial']}, not {serial}")
+            samples = saved["samples"]
+            print(f"Resumed {len(samples)} saved spots from {args.samples}")
+        elif args.samples.exists():
+            print(f"Note: starting fresh; {args.samples} will be overwritten at the first "
+                  "spot (use --resume to add to it).")
         align = rs.align(rs.stream.color)
         print(__doc__.split("Afterwards")[0])
         while True:
@@ -379,23 +461,41 @@ def collect(args):
                     print("  removed last spot")
                 continue
             if cmd == "solve":
-                report_and_save(samples, args)
+                try:
+                    report_and_save(samples, serial, args)
+                except ValueError as exc:
+                    print(f"  Could not solve: {exc}")
                 continue
             if cmd:
                 print("  unknown command")
                 continue
 
+            # Read the pose before and after the camera averages, so a spot is
+            # rejected if the hand-guided arm was still drifting. Manual entry
+            # is read once, to avoid pasting twice.
+            automatic = not isinstance(robot, ManualPose)
+            try:
+                before = robot.read() if automatic else None
+            except Exception as exc:  # report and let the user retry
+                print(f"  NOT recorded: could not read robot pose ({exc})")
+                continue
             point, note = average_ball(rs, cv2, pipeline, align, args)
             if point is None:
                 print(f"  NOT recorded: {note}")
                 continue
             try:
                 pose = robot.read()
-            except Exception as exc:  # report and let the user retry
+            except Exception as exc:
                 print(f"  NOT recorded: could not read robot pose ({exc})")
                 continue
+            if before is not None:
+                drift = np.linalg.norm(pose[:3, 3] - before[:3, 3])
+                if drift > MAX_DRIFT_M:
+                    print(f"  NOT recorded: the arm moved {1000 * drift:.1f} mm while "
+                          "recording. Let it settle and press Enter again.")
+                    continue
             samples.append({"camera_xyz_m": point.tolist(), "ee_pose_base": pose.tolist()})
-            save_json(args.samples, {"samples": samples})
+            save_json(args.samples, {"camera_serial": serial, "samples": samples})
             print(f"  spot {len(samples)} recorded | camera XYZ=({point[0]:+.3f}, "
                   f"{point[1]:+.3f}, {point[2]:.3f}) m | robot EE=({pose[0, 3]:+.3f}, "
                   f"{pose[1, 3]:+.3f}, {pose[2, 3]:+.3f}) m | {note}")
@@ -431,8 +531,13 @@ def main():
     args = parser.parse_args()
 
     if args.refit:
-        samples = json.loads(args.refit.read_text())["samples"]
-        return 0 if report_and_save(samples, args) else 1
+        saved = json.loads(args.refit.read_text())
+        try:
+            ok = report_and_save(saved["samples"], saved.get("camera_serial"), args)
+        except ValueError as exc:
+            print(f"Could not solve: {exc}", file=sys.stderr)
+            ok = False
+        return 0 if ok else 1
     if args.preview and sys.platform.startswith("linux") and not (
         os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     ):
