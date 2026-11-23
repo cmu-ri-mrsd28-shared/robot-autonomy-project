@@ -13,8 +13,8 @@ Run from the project folder in the lab's FrankaPy environment:
 
 All moves keep the box orientation recorded at home and command the box
 opening, not the tool frame. Every target is checked against the 0.2 m sphere
-before anything is sent. These checks bypass the ROS adapter and its MoveIt
-collision screening: they command the physical robot directly.
+before anything is sent. These checks bypass the ROS adapter: they command the physical robot
+directly through FrankaPy.
 """
 import argparse
 import json

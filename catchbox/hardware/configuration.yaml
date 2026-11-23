@@ -18,20 +18,17 @@ adapter:
   enable_motion: false
   # Joint targets streamed to FrankaPy per second.
   rate_hz: 100
-  # Per-joint limits of the streamed commands, rad/s and rad/s^2. Review before raising.
-  max_joint_velocity: 0.3
-  max_joint_acceleration: 1.0
-  # Stop if any measured joint lags the command by more than this, rad.
-  tracking_limit_rad: 0.1
+  # Per-joint limits of the streamed commands, rad/s and rad/s^2. Simulation: ~1 / 4 keeps most catches.
+  max_joint_velocity: 1.0
+  max_joint_acceleration: 4.0
 
-# MoveIt planning scene, added by: python3 -m catchbox.hardware.planning_scene
-planning_scene:
-  # Catch box bounds from assets/armbox-thin-meters.STL, in a frame at the opening that is level at home (x forward, z up).
-  box_min_m: [-0.12, -0.075, -0.10]
-  box_max_m: [0.075, 0.075, 0.0]
-  # Extra margin added on every side of the box, meters.
-  padding_m: 0.01
-  # The robot base sits on the table, so the table top is at z = 0 in panda_link0.
-  table_top_z_m: 0.0
-  # Table box centered under the base: X, Y, thickness in meters.
-  table_size_m: [2.0, 2.0, 0.1]
+# Trained policy's simulation frame (catchbox.hardware.policy_frame). From LimitedPoseCatchCore; do not edit.
+policy:
+  # Box opening at the start of every simulated episode, panda_link0 axes, meters.
+  sim_start_opening_m: [0.5547317061010182, 0.0, 0.17904387158518817]
+  # Simulated workspace sphere the policy's targets were clamped to.
+  sim_workspace_center_m: [0.45723170610101843, 0.0, 0.09904387158518815]
+  sim_workspace_radius_m: 0.2
+  # Action [-1, 1] -> offset from the start: x/y/z scale, and the allowed z offset range.
+  action_scale_m: [0.23, 0.23, 0.13]
+  action_z_range_m: [-0.13, 0.08]
