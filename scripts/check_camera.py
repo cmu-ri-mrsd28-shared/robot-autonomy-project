@@ -10,7 +10,7 @@ import sys
 import time
 
 
-def show_frames(cv2, np, colorizer, color, depth):
+def show_frames(cv2, np, colorizer, color, depth, *, sample_point=None):
     color_image = np.asanyarray(color.get_data())
     # The SDK colorizer returns RGB. OpenCV displays BGR.
     colorized_depth = colorizer.colorize(depth)
@@ -19,9 +19,35 @@ def show_frames(cv2, np, colorizer, color, depth):
     preview = np.hstack((color_image, depth_image))
     window = "RealSense D435 | RGB (left) / Depth (right)"
     cv2.imshow(window, preview)
+    if sample_point is not None:
+        def on_click(event, x, y, flags, userdata):
+            if event == cv2.EVENT_LBUTTONDOWN and 0 <= x < color.get_width():
+                sample_point(depth, x, y)
+
+        cv2.setMouseCallback(window, on_click)
     return cv2.waitKey(1) & 0xFF not in (ord("q"), 27) and (
         cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) >= 1
     )
+
+
+def print_sample_point(rs, depth, x, y):
+    """Print camera-frame XYZ at a clicked marker on a stationary surface."""
+    intrinsics = depth.profile.as_video_stream_profile().intrinsics
+    values = [
+        depth.get_distance(u, v)
+        for v in range(max(0, y - 2), min(intrinsics.height, y + 3))
+        for u in range(max(0, x - 2), min(intrinsics.width, x + 3))
+    ]
+    valid = [z for z in values if math.isfinite(z) and z > 0]
+    if len(valid) < max(3, math.ceil(len(values) / 2)):
+        print("Marker has insufficient depth. Try a flat matte surface.", flush=True)
+        return
+    z = median(valid)
+    if sum(abs(value - z) <= 0.02 for value in valid) < math.ceil(0.7 * len(valid)):
+        print("Marker is near a depth edge. Click inside the flat surface.", flush=True)
+        return
+    point = rs.rs2_deproject_pixel_to_point(intrinsics, [x, y], z)
+    print("camera_xyz_m=" + ",".join(f"{value:.6f}" for value in point), flush=True)
 
 
 @contextmanager
@@ -153,7 +179,13 @@ def main():
     parser.add_argument(
         "--preview", action="store_true", help="Show live RGB and aligned depth"
     )
+    parser.add_argument(
+        "--sample-points", action="store_true",
+        help="Print camera XYZ when clicking a stationary marker in the RGB preview",
+    )
     args = parser.parse_args()
+    if args.sample_points:
+        args.preview = True
     if args.seconds is not None and (
         not math.isfinite(args.seconds) or args.seconds <= 0
     ):
@@ -185,7 +217,10 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        preview_frame = partial(show_frames, cv2, np, rs.colorizer())
+        sample_point = partial(print_sample_point, rs) if args.sample_points else None
+        preview_frame = partial(show_frames, cv2, np, rs.colorizer(), sample_point=sample_point)
+        if args.sample_points:
+            print("Click the same surveyed mark in the left (RGB) pane for each sample.")
 
     try:
         with camera_session(rs) as (pipeline, profile):
