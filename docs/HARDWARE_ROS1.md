@@ -53,7 +53,7 @@ python -m catchbox.hardware.calibration --move left --distance 0.05   # home, th
 
 Left/right are base-frame +Y/-Y, up/down +Z/-Z, forward/back +X/-X. All moves command the box opening and keep the box orientation from home. Each check starts with a joint move to home. Targets outside the 0.2 m sphere are rejected; check3 skips steps below `min_opening_z_m` and check4 only picks points above it. After every move the script prints the reached opening position and its error.
 
-Options: `--speed` (opening speed in m/s, default 0.05), `--max-distance` (check3 largest step, check4 sphere radius), `--directions left right` (check3 only), `--count` and `--seed` (check4).
+Options: `--speed` (opening speed in m/s, default 0.075), `--max-distance` (check3 largest step, check4 sphere radius), `--left`, `--right`, `--up`, `--down`, `--forward`, `--back` to run check3 in only those directions (combine them, e.g. `--left --right`), `--count` and `--seed` (check4).
 
 The same YAML file is used directly by the ROS calibration script and command adapter. The adapter verifies the recorded center against URDF forward kinematics; fix any mismatch between the reported FrankaPy tool frame, `tip_link`, and the opening offset before moving. Do not commit a local calibration file without review.
 

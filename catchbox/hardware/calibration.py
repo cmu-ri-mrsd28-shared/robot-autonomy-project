@@ -7,6 +7,7 @@ Run from the project folder in the lab's FrankaPy environment:
     python -m catchbox.hardware.calibration --check1-home      # go to recorded home joints
     python -m catchbox.hardware.calibration --check2-small     # 3 cm out and back, six directions
     python -m catchbox.hardware.calibration --check3-steps     # 5/10/15/20 cm out and back
+    python -m catchbox.hardware.calibration --check3-steps --right   # only one direction
     python -m catchbox.hardware.calibration --check4-catch     # chain random points, no return between
     python -m catchbox.hardware.calibration --move left --distance 0.05
 
@@ -26,8 +27,8 @@ JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
 MOVE_GROUP = "panda_arm"
 WORKSPACE_RADIUS_M = 0.2
 DEFAULT_CONFIG = Path(__file__).with_name("configuration.yaml")
-DEFAULT_SPEED = 0.05          # m/s of the box opening
-MIN_DURATION = 2.0            # s, for any single move
+DEFAULT_SPEED = 0.075         # m/s of the box opening
+MIN_DURATION = 1.33           # s, for any single move
 DEFAULT_MIN_Z = 0.10          # m, lowest opening height if min_opening_z_m is not set
 # Base-frame directions. left/right are +Y/-Y, forward/back are +X/-X.
 AXES = {'origin': [0, 0, 0], 'up': [0, 0, 1], 'down': [0, 0, -1], 'left': [0, 1, 0],
@@ -225,6 +226,9 @@ def main():
     parser.add_argument('--distance', type=float, default=0.03, help='With --move: offset in meters (default 0.03)')
     parser.add_argument('--max-distance', type=float, default=0.20, help='check3: largest step; check4: sphere radius used (default 0.20)')
     parser.add_argument('--directions', nargs='+', choices=DIRECTIONS, help='check3: only these directions')
+    for name in DIRECTIONS:
+        parser.add_argument(f'--{name}', dest='directions', action='append_const', const=name,
+                            help=f'check3: include {name} (combine, e.g. --left --right)')
     parser.add_argument('--count', type=int, default=10, help='check4: number of points (default 10)')
     parser.add_argument('--seed', type=int, default=0, help='check4: random seed (default 0)')
     parser.add_argument('--speed', type=float, default=DEFAULT_SPEED, help=f'Opening speed in m/s (default {DEFAULT_SPEED})')
