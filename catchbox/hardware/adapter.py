@@ -158,8 +158,9 @@ class Adapter:
                 self.joint_goal, self.planned = q, p
 
     def run(self):
-        threading.Thread(target=self.plan_loop, daemon=True).start()
+        # Start the dynamic skill before the planner checks its status.
         stream = Stream(self.arm, self.limiter.q) if self.motion else None
+        threading.Thread(target=self.plan_loop, daemon=True).start()
         self.rospy.loginfo('Adapter running; motion %s', 'ENABLED' if self.motion else 'disabled (dry run)')
         dt, last = 1.0 / self.rate_hz, time.monotonic()
         last_log=last
