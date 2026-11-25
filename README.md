@@ -120,30 +120,84 @@ cleanup and can also be run by itself to inspect the raw streams.
 
 ### Report ball coordinates in the Panda base frame
 
-To collect points with the Panda, fix a white or orange 40 mm table-tennis ball to the
-box where the RealSense can see it. Keep the camera fixed and use its RGB
-stream. Pass `--ball-color orange` for an orange ball.
+#### Collect poses in the lab
+
+Keep the RealSense fixed relative to the Panda base. Plug the camera into the
+machine running the calibration and use the RGB stream. Attach a 40 mm
+table-tennis ball rigidly to the end effector or catch box. Keep the ball in
+view at every pose.
+
+For automatic pose reads, source the lab's ROS 1 workspace in the same shell
+that runs the camera script. The Franka Interface publisher can run on the
+control PC while the RealSense is connected to the calibration machine.
+Check that the calibration machine receives the measured `O_T_EE` before
+starting a session.
 
 ```sh
-python -B scripts/calibrate_camera_live.py --robot manual --preview
+topic=/robot_state_publisher_node_1/robot_state
+timeout 5s rostopic echo -n 1 "$topic"/O_T_EE
+python -B scripts/calibrate_camera_live.py --robot ros --ros-topic "$topic" \
+  --preview --ball-color orange
 ```
 
-At each stationary pose, press Enter and paste the 16 numbers from the
-Panda's measured `O_T_EE`. If your ROS 1 workspace already publishes arm
-state, the calibrator can read it directly. For example, with Franka Interface:
+With a white ball, omit `--ball-color orange`. For manual pose entry, use
+`--robot manual` and paste all 16 numbers from the measured `O_T_EE` when
+prompted. If detection drops out with a dim ball, try `--brightness 140`.
+If the camera-only check is stable at 15 fps, pass `--fps 15` to the
+calibrator as well.
+
+Let the arm settle, then press **Enter** at each pose. Collect 10-15 poses
+spread left/right, near/far, and high/low across the catch area. Tilt the wrist
+about different axes at several poses so the solver can separate the ball
+offset from the camera translation. If you know the ball center relative to
+the origin of `O_T_EE`, pass the three signed distances along the EE axes
+as `--ball-offset X Y Z` in meters.
+
+Type **`solve`** and review the check RMS and worst error. The check leaves
+each pose out of the fit in turn. Verify additional measured points near
+the catch zone before using a calibration to guide arm motion.
+
+#### Resume or refit a session
+
+Each accepted pose is saved immediately. Ctrl+C keeps the completed poses.
+Add `--resume` to the same live command to keep collecting with the same
+camera mount and ball attachment. Without `--resume`, the first new spot
+replaces the previous samples file. For a new setup, use distinct
+`--samples` and `--out` paths to keep the previous run available.
+
+| File | Use |
+|---|---|
+| [camera_samples.json](calibration/camera_samples.json) | Raw camera XYZ and Panda EE poses. Use it to resume or refit offline. |
+| [camera_to_base.json](calibration/camera_to_base.json) | Transform from the RealSense RGB optical frame to the Panda base frame, with camera serial and error statistics. Share this file with the tracking teammate. |
+| [camera_to_base_pairs.csv](calibration/camera_to_base_pairs.csv) | Reconstructed point pairs exported by the live fit for inspection. |
+
+For example, compare a fit that excludes spot 18 while keeping the committed
+calibration available.
 
 ```sh
-python -B scripts/calibrate_camera_live.py --robot ros --preview \
-  --ros-topic /robot_state_publisher_node_1/robot_state
+python -B scripts/calibrate_camera_live.py \
+  --refit calibration/camera_samples.json --drop 18 \
+  --out /tmp/catchbox-camera-no-18.json
 ```
 
-Record 10-15 poses spread across the catch area.
-Tilt the wrist about different axes at several poses so the solver can
-separate the ball offset from camera translation. If the ball center has
-a measured offset in the end-effector frame, supply `--ball-offset X Y Z`
-in meters. Type `solve` and review the leave-one-out errors. The live tool
-saves `calibration/camera_to_base.json` by default. Check additional points
-near the catch zone before using that transform to guide motion.
+#### Preview with the saved calibration
+
+The committed lab calibration used 21 poses. Its leave-one-out error was
+**37.6 mm RMS** and **111.2 mm worst**. A trial fit excluding spot 18 gave
+**25.3 mm RMS** and **47.9 mm worst**. Use the committed transform for
+**tracking previews and logs**. Refit and verify independent points near
+the catch zone before using it to command the Panda.
+
+On the orange-ball tracking branch (`tcoy/camera-calibration`), copy the
+JSON to the machine running the tracker and pass its path.
+
+```sh
+python -B scripts/track_orange.py --fps 30 --preview \
+  --calibration /path/to/camera_to_base.json
+```
+
+Look for `base XYZ` in meters. The tracker checks the camera serial. If the
+camera moves relative to the Panda, collect a new calibration.
 
 #### Fit from surveyed points
 
