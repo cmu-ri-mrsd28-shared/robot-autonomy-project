@@ -6,9 +6,9 @@ A MuJoCo / robosuite simulation of a Franka catching a table-tennis ball in a 3D
 
 ## Model and results
 
-The new [steady-motion model](docs/STEADY_MOTION.md) and its CPU actor are also included. Its camera-state interface is not yet supported by the ROS model node; the original model remains the default.
+The new [steady-motion model](docs/STEADY_MOTION.md) and its CPU actor are also included. The ROS model node loads the steady-motion actor; the real camera publisher and hardware integration still need validation.
 
-The current model is `artifacts/limited-thin-model/final_model.zip`. It was trained from scratch for 50,000 decisions using the thin box, a 20 ms decision interval, and joint targets for joints 1, 4 and 6. On 50 held-out simulated throws, the ball entered on 50 and remained in the box for one second on 49. On 20 harder throws aimed near opposite sides of the workspace, the corrected metric measured 13 retained catches. These results use exact simulated ball tracking and an ideal rigid grasp.
+The original model is `artifacts/limited-thin-model/final_model.zip`. It was trained from scratch for 50,000 decisions using the thin box, a 20 ms decision interval, and joint targets for joints 1, 4 and 6. On 50 held-out simulated throws, the ball entered on 50 and remained in the box for one second on 49. On 20 harder throws aimed near opposite sides of the workspace, the corrected metric measured 13 retained catches. These results use exact simulated ball tracking and an ideal rigid grasp.
 
 **The 20 cm radius constrains predicted landing points and desired opening targets, not the actual robot or its swept volume.** In the edge test the opening itself went outside the sphere. This is not a hardware safety boundary; a separately validated safety controller and collision checks are required.
 
@@ -180,6 +180,7 @@ The ball tracker publishes the ball in `panda_link0`; `model_node.py` turns it a
 | Topic | Type | Published by | Used by |
 |---|---|---|---|
 | `/catchbox/ball_state` | `nav_msgs/Odometry` | ball tracker (not built yet); `mock_inputs` | `model_node` |
+| `/catchbox/ball_tracking_status` | `std_msgs/Int8` | ball tracker (not built yet); `mock_inputs` | `model_node` |
 | `/catchbox/ball_in_box` | `std_msgs/Int8` | ball tracker (not built yet); `mock_inputs` | `model_node` |
 | `/catchbox/box_state` | `nav_msgs/Odometry` | `robot_state` / `mock_robot` | `model_node` |
 | `/catchbox/robot_joints` | `sensor_msgs/JointState` | `robot_state` / `mock_robot` | `adapter` |

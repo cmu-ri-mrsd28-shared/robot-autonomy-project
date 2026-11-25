@@ -26,3 +26,24 @@ def build_observation(frame, box_position, box_velocity, box_angular_velocity, b
     raw=np.r_[bp,bv/3,bw/3,p,v/5,ip,iv/5,np.clip(t,0,2),1.,float(pred is not None),float(in_box)]
     # Translate absolute positions before final clipping, just as in training.
     return frame.observation(raw)
+
+
+def build_steady_observation(frame, box_position, box_velocity, box_angular_velocity,
+                             ball_position, ball_velocity, tracking_status, in_box):
+    """Create the steady-motion 25 values without leaking a hidden ball position.
+
+    tracking_status: 0 hidden; 1 visible but velocity unavailable; 2 tracked.
+    in_box: -1 unknown; 0 outside; 1 inside/probably inside.
+    """
+    if tracking_status not in (0, 1, 2) or in_box not in (-1, 0, 1):
+        raise ValueError('Invalid camera status')
+    bp,bv,bw=vec(box_position,'box position'),vec(box_velocity,'box velocity'),vec(box_angular_velocity,'box angular velocity')
+    visible=tracking_status != 0
+    p=vec(ball_position,'ball position') if visible else np.zeros(3)
+    v=vec(ball_velocity,'ball velocity') if tracking_status == 2 else np.zeros(3)
+    pred=interception(p,v,float(frame.sim_start[2]+frame.offset[2]),in_box==1) if tracking_status==2 else None
+    ip,iv,t=pred if pred is not None else (np.zeros(3),np.zeros(3),0.)
+    raw=np.r_[bp,bv/3,bw/3,p,v/5,ip,iv/5,np.clip(t,0,2),float(tracking_status==2),float(pred is not None),float(in_box)]
+    obs=frame.observation(raw)
+    if not visible:obs[9:15]=0
+    return obs

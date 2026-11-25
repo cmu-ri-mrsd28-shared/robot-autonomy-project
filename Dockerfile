@@ -16,7 +16,7 @@ ENV PYTHONPATH=/app \
     ROS_HOSTNAME=127.0.0.1
 WORKDIR /app
 COPY catchbox/ catchbox/
-COPY artifacts/limited-thin-model/actor.npz artifacts/limited-thin-model/final_model.zip artifacts/limited-thin-model/
+COPY artifacts/steady-motion-model/actor.npz artifacts/steady-motion-model/final_model.zip artifacts/steady-motion-model/
 COPY docker/ docker/
 # The ROS image entrypoint sources Noetic. The test creates its own ROS master.
 CMD ["python3", "docker/ros_pipeline_test.py"]

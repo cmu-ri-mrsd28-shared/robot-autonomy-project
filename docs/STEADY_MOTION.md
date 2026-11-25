@@ -12,7 +12,7 @@ This is simulation-only. No training begins by importing these scripts.
 
 Generate the test banks with `scripts/prepare_steady_motion_evaluation.py`. The training runner `scripts/train_steady_motion_50k.py` requires the resulting banks and refuses to overwrite an existing run. It evaluates the original and new policy using the same simulated camera, but the original was not trained with the new unknown-flag convention; that is a distribution shift and must be reported.
 
-Neither the simulated ray caster nor camera estimator is integrated into the hardware ROS camera node. The current hardware policy node withholds targets when ball tracking is invalid, whereas this simulation allows the policy to act during occlusion; this mismatch must be resolved before deployment. Hardware camera occlusion, latency, camera calibration, grasp, and tracking remain unvalidated.
+Neither the simulated ray caster nor camera estimator is integrated into the hardware ROS camera node. The ROS node accepts a distinct hidden-ball status, but the real camera publisher and its state estimates have not been implemented or validated. Hardware camera occlusion, latency, camera calibration, grasp, and tracking remain unvalidated.
 
 ## Saved model and control-PC inference
 
@@ -27,7 +27,7 @@ actor = Actor('artifacts/steady-motion-model/actor.npz')
 action = actor.predict(observation)  # 25 finite values; returns 3 bounded values
 ```
 
-The existing `model_node.py` still loads the original model and does not implement the steady-motion model's occlusion/unknown observations. **Do not replace its actor file or run the steady-motion model through that node yet.** A camera-to-policy adapter must implement the observation convention above, including unknown-state handling, before hardware control. This inference example does not control the robot.
+The ROS `model_node.py` loads the steady-motion actor and accepts the observation convention above. The real camera publisher is not implemented; the full pipeline has only been tested with mock input, not on a robot. This inference example does not control the robot.
 
 ## Simulation results
 

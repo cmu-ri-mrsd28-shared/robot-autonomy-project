@@ -11,6 +11,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',default=None);parser.add_argument('--rate',type=float,default=50.)
     parser.add_argument('--seconds',type=float,default=10.)
+    parser.add_argument('--exercise-occlusion',action='store_true',help='Cycle through tracked, hidden and no-ball status for offline testing')
     parser.add_argument('--mock-box-state',action='store_true',help='Also publish a stationary synthetic box and joints; do not run alongside robot_state')
     args=parser.parse_args(rospy.myargv()[1:])
     if not 0<args.rate<=100 or not 0<args.seconds<=300:raise ValueError('Invalid rate or duration')
@@ -20,7 +21,7 @@ def main():
     center=settings['calibration']['origin_xyz_m']
     if len(center)!=3 or not all(math.isfinite(float(x)) for x in center):raise ValueError('Calibrate origin first')
     rospy.init_node('catchbox_mock_ball')
-    pub=rospy.Publisher('/catchbox/ball_state',Odometry,queue_size=1);flag=rospy.Publisher('/catchbox/ball_in_box',Int8,queue_size=1)
+    pub=rospy.Publisher('/catchbox/ball_state',Odometry,queue_size=1);flag=rospy.Publisher('/catchbox/ball_in_box',Int8,queue_size=1);status=rospy.Publisher('/catchbox/ball_tracking_status',Int8,queue_size=1)
     if args.mock_box_state:
         from sensor_msgs.msg import JointState
         from catchbox.hardware.calibration import JOINT_NAMES
@@ -37,7 +38,10 @@ def main():
         m.pose.pose.position.x=center[0]+.20-.15*t;m.pose.pose.position.y=center[1]+.03
         m.pose.pose.position.z=center[2]+.45+.3*t-4.905*t*t
         m.twist.twist.linear.x=-.15;m.twist.twist.linear.z=.3-9.81*t
-        pub.publish(m);flag.publish(Int8(data=0))
+        tracking=2
+        if args.exercise_occlusion:tracking=2 if t<.6 else (0 if t<.8 else -1)
+        if tracking==2:pub.publish(m)
+        flag.publish(Int8(data=0 if tracking==2 else -1));status.publish(Int8(data=tracking))
         if args.mock_box_state:
             box=Odometry();box.header.stamp=m.header.stamp;box.header.frame_id=BASE_LINK;box.child_frame_id=BASE_LINK
             box.pose.pose.position.x,box.pose.pose.position.y,box.pose.pose.position.z=map(float,position)

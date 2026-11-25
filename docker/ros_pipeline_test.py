@@ -70,7 +70,7 @@ def main():
             wait_for(lambda: observed.sample()[0] is not None and math.dist(observed.sample()[0],CENTER)<.012,12,'return to center',processes)
             print('PASS: held before returning toward center after 3 seconds',flush=True)
             start('model',[sys.executable,'-m','catchbox.hardware.model_node','--config',CONFIG,'--log',tmp+'/model.jsonl'])
-            start('mock ball',[sys.executable,'-m','catchbox.hardware.mock_inputs','--config',CONFIG,'--seconds','25'])
+            start('mock ball',[sys.executable,'-m','catchbox.hardware.mock_inputs','--config',CONFIG,'--seconds','25','--exercise-occlusion'])
             initial=observed.sample(); initial_targets=initial[2];initial_joints=initial[3];initial_q=initial[1]
             wait_for(lambda:observed.sample()[2]>initial_targets+10 and observed.sample()[3]>initial_joints+10,25,'model and adapter output',processes)
             def model_moved_fake_robot():
@@ -81,7 +81,13 @@ def main():
             wait_for(lambda:model_log.exists() and '"inference"' in model_log.read_text(),10,'model inference log',processes)
             sample=next(json.loads(line) for line in model_log.read_text().splitlines() if json.loads(line).get('event')=='inference')
             if len(sample['observation'])!=25 or len(sample['action'])!=3 or not all(math.isfinite(v) for v in sample['action']):raise RuntimeError('Invalid policy input or output')
-            print('PASS: fake ball -> 25 model inputs -> policy targets -> adapter joint stream',flush=True)
+            wait_for(lambda:any(json.loads(line).get('event')=='inference' and json.loads(line).get('tracking_status')==0 for line in model_log.read_text().splitlines()),10,'hidden ball inference',processes)
+            hidden=next(json.loads(line) for line in model_log.read_text().splitlines() if json.loads(line).get('event')=='inference' and json.loads(line).get('tracking_status')==0)
+            if hidden['observation'][9:22]!=[0.]*13 or hidden['observation'][22:25]!=[0.,0.,-1.]:raise RuntimeError('Invalid hidden-ball observation')
+            print('PASS: hidden ball produces unknown flag and zero ball state',flush=True)
+            f.flush()
+            if 'steady-motion-model/actor.npz' not in out.read_text():raise RuntimeError('Steady-motion actor was not loaded')
+            print('PASS: steady-motion actor loaded; fake ball -> 25 model inputs -> policy targets -> adapter joint stream',flush=True)
             print('PASS: timing and action logs recorded; no robot connection was opened',flush=True)
             print('All ROS pipeline checks passed.',flush=True)
         except BaseException:

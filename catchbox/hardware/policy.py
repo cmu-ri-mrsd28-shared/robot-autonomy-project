@@ -4,6 +4,7 @@ import hashlib
 import numpy as np
 
 DEFAULT_ACTOR = Path(__file__).resolve().parents[2] / 'artifacts' / 'limited-thin-model' / 'actor.npz'
+STEADY_MOTION_ACTOR = Path(__file__).resolve().parents[2] / 'artifacts' / 'steady-motion-model' / 'actor.npz'
 
 class Actor:
     def __init__(self, path=DEFAULT_ACTOR, checkpoint=None):

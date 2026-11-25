@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from catchbox.hardware.policy import Actor
 from catchbox.hardware.policy_frame import PolicyFrame
-from catchbox.hardware.observation import build_observation,interception
+from catchbox.hardware.observation import build_observation,build_steady_observation,interception
 from catchbox.hardware.panda_kinematics import PandaKinematics,tool_pose
 
 SETTINGS={'calibration':{'origin_xyz_m':[.48,.01,.3]},'policy':{'sim_start_opening_m':[.5547317061010182,0,.17904387158518817], 'sim_workspace_center_m':[.45723170610101843,0,.09904387158518815], 'sim_workspace_radius_m':.2,'action_scale_m':[.23,.23,.13],'action_z_range_m':[-.13,.08]}}
@@ -67,7 +67,30 @@ def test_model_node_requires_fresh_known_ball_and_robot_state(monkeypatch):
         return N(header=N(stamp=Stamp(t),frame_id='panda_link0'),pose=N(pose=N(position=point)),twist=N(twist=N(linear=z,angular=z)))
     c=np.array(SETTINGS['calibration']['origin_xyz_m']);node.on_box(message(c));node.on_ball(message(c+[.1,0,.4]))
     assert not node.step()  # no explicit in-box state
-    node.on_flag(N(data=0));assert node.step() and len(published)==1
-    node.on_flag(N(data=-1));assert not node.step() and len(published)==1
-    node.on_flag(N(data=0));node.on_ball(message(c+[.1,0,.4],99.7));assert not node.step()
+    node.on_flag(N(data=0));node.on_status(N(data=2));assert node.step() and len(published)==1
+    node.on_flag(N(data=-1));node.on_status(N(data=0));assert node.step() and len(published)==2
+    node.on_status(N(data=-1));assert not node.step()
+    node.on_status(N(data=2));node.on_flag(N(data=0));node.on_ball(message(c+[.1,0,.4],99.7));assert not node.step()
     node.on_ball(message(c+[.1,0,.4]));node.flag_time=time.monotonic()-1;assert not node.step()
+
+
+def test_steady_observation_hidden_and_visible_states():
+    frame=PolicyFrame(SETTINGS); box=np.array(SETTINGS['calibration']['origin_xyz_m']);ball=box+[.1,0,.4]
+    hidden=build_steady_observation(frame,box,[0]*3,[0]*3,None,None,0,-1)
+    np.testing.assert_array_equal(hidden[9:22],np.zeros(13))
+    assert hidden[22:25].tolist()==[0,0,-1]
+    visible=build_steady_observation(frame,box,[0]*3,[0]*3,ball,[5,5,5],1,0)
+    np.testing.assert_allclose(visible[9:12],ball-frame.offset,rtol=1e-6,atol=1e-7)
+    np.testing.assert_array_equal(visible[12:22],np.zeros(10))
+    assert visible[22:25].tolist()==[0,0,0]
+    tracked=build_steady_observation(frame,box,[0]*3,[0]*3,ball,[0,0,-1],2,0)
+    assert tracked[22:25].tolist()==[1,1,0]
+
+
+def test_steady_actor_matches_checkpoint():
+    from sb3_contrib import CrossQ
+    from catchbox.hardware.policy import STEADY_MOTION_ACTOR
+    model=CrossQ.load('artifacts/steady-motion-model/final_model.zip',device='cpu')
+    actor=Actor(STEADY_MOTION_ACTOR);rng=np.random.default_rng(42)
+    for obs in rng.uniform(-3,3,(100,25)).astype(np.float32):
+        np.testing.assert_allclose(actor.predict(obs),model.predict(obs,deterministic=True)[0],rtol=1e-4,atol=1e-4)
