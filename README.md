@@ -116,6 +116,25 @@ cleanup and can also be run by itself to inspect the raw streams.
 
 ### Report ball coordinates in the Panda base frame
 
+To collect points with the Panda, fix a white 40 mm table-tennis ball to the
+box where the RealSense can see it. Keep the camera fixed and use its RGB
+stream.
+
+```sh
+python -B scripts/calibrate_camera_live.py --robot manual --preview
+```
+
+At each stationary pose, press Enter and paste the 16 numbers from the
+Panda's measured `O_T_EE`. Record 10-15 poses spread across the catch area.
+Tilt the wrist about different axes at several poses so the solver can
+separate the ball offset from camera translation. If the ball center has
+a measured offset in the end-effector frame, supply `--ball-offset X Y Z`
+in meters. Type `solve` and review the leave-one-out errors. The live tool
+saves `calibration/camera_to_base.json` by default. Check additional points
+near the catch zone before using that transform to guide motion.
+
+#### Fit from surveyed points
+
 Keep the camera fixed. From the camera environment, open the RGB preview
 and click a stationary mark on a flat, matte surface.
 

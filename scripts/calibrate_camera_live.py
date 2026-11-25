@@ -5,7 +5,7 @@ How it works, in plain words:
   2. Hand-guide the arm to a spot, let it settle, press Enter. The script records
      where the camera sees the ball and the robot's end-effector pose.
   3. Repeat at 10-15 spots spread over the catching area. Also turn the wrist
-     differently between spots; this lets the script work out exactly where the
+     around different axes between spots; this lets the script estimate where the
      ball sits on the box, so you do not have to measure that precisely.
   4. Type "solve". The script prints the error at each spot and saves the result.
 
@@ -43,7 +43,7 @@ import csv
 # Ashutosh's calibrate_camera.py defines the JSON format track_ball.py loads.
 # Importing it keeps the two tools writing the same format.
 from calibrate_camera import (
-    CameraToBase, COORDINATES, SOURCE_FRAME, TARGET_FRAME, load_calibration,
+    CameraToBase, COORDINATES, SOURCE_FRAME, TARGET_FRAME, fit_transform, load_calibration,
 )
 from track_ball import Detection, estimate_position
 
@@ -55,6 +55,8 @@ MIN_SAMPLES = 6
 # Turning the wrist at least this much between spots lets the solver find the
 # ball's position on the box. Below it, a measured --ball-offset is required.
 MIN_ROTATION_SPREAD_DEG = 25.0
+# Minimum RMS wrist-induced displacement per meter of tool offset in any direction.
+MIN_OFFSET_EXCITATION = 0.05
 # Spots should cover the catching area; warn if any direction spans less.
 MIN_COVERAGE_M = 0.15
 # Reject a spot if the arm moved more than this while it was being recorded.
@@ -97,13 +99,29 @@ def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
     Model: R @ p_cam + t = R_ee @ offset + p_ee.
     """
     cam = np.asarray(camera_points, float)
-    rot = np.asarray(ee_poses, float)[:, :3, :3]
-    pos = np.asarray(ee_poses, float)[:, :3, 3]
+    poses = np.asarray(ee_poses, float)
+    if cam.ndim != 2 or cam.shape[1] != 3 or len(cam) < 3 or poses.shape != (len(cam), 4, 4):
+        raise ValueError("Expected at least three paired camera XYZ and 4x4 Panda poses")
+    if not np.isfinite(cam).all() or not np.isfinite(poses).all():
+        raise ValueError("Calibration samples must be finite")
+    rot = poses[:, :3, :3]
+    pos = poses[:, :3, 3]
     fixed = ball_offset is not None
 
     if fixed:
         offset = np.asarray(ball_offset, float)
+        if offset.shape != (3,) or not np.isfinite(offset).all():
+            raise ValueError("Ball offset must be three finite values in meters")
     else:
+        # A tool offset that maps to the same base displacement at every pose
+        # is indistinguishable from camera translation. Centering removes it.
+        variations = (rot - rot.mean(axis=0)).reshape(-1, 3)
+        singular_values = np.linalg.svd(variations, compute_uv=False) / np.sqrt(len(rot))
+        if singular_values[-1] < MIN_OFFSET_EXCITATION:
+            raise ValueError(
+                "Cannot separate the ball offset from camera translation. Collect wrist "
+                "rotations about different axes or supply a measured --ball-offset X Y Z."
+            )
         # Linear first guess: treat the 9 entries of R as free, solve for
         # R, t and offset together, then snap R to a true rotation.
         rows, rhs = [], []
@@ -134,7 +152,8 @@ def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
         offset = new_offset
 
     target = np.einsum("nij,j->ni", rot, offset) + pos
-    r, t = kabsch(cam, target)
+    transform = fit_transform(cam, target)
+    r, t = transform.rotation, transform.translation
     errors = np.linalg.norm(cam @ r.T + t - target, axis=1)
     return r, t, offset, errors
 
@@ -142,15 +161,17 @@ def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
 def check_errors(camera_points, ee_poses, ball_offset=None):
     """Leave-one-out error: fit without each spot, then measure that spot.
 
-    This estimates accuracy at places the fit has not seen, which is what
-    matters during a catch. It is always larger than the fit error.
+    This checks how the fit generalizes within the recorded pose set.
     """
     cam = np.asarray(camera_points, float)
     poses = np.asarray(ee_poses, float)
     out = []
     for i in range(len(cam)):
         keep = np.arange(len(cam)) != i
-        r, t, offset, _ = solve(cam[keep], poses[keep], ball_offset)
+        try:
+            r, t, offset, _ = solve(cam[keep], poses[keep], ball_offset)
+        except ValueError as exc:
+            raise ValueError(f"Check with retained spot {i + 1} left out failed. {exc}") from exc
         predicted = poses[i, :3, :3] @ offset + poses[i, :3, 3]
         out.append(np.linalg.norm(r @ cam[i] + t - predicted))
     return np.array(out)
@@ -323,21 +344,21 @@ def report_and_save(samples, serial, args):
         return False
     cam = np.array([s["camera_xyz_m"] for s in keep])
     poses = np.array([s["ee_pose_base"] for s in keep])
-    spread = rotation_spread_deg(poses[:, :3, :3])
     offset = args.ball_offset
-    if offset is None and spread < MIN_ROTATION_SPREAD_DEG:
+    r, t, offset, fit = solve(cam, poses, offset)
+    spread = rotation_spread_deg(poses[:, :3, :3])
+    if args.ball_offset is None and spread < MIN_ROTATION_SPREAD_DEG:
         print(f"The wrist only turned {spread:.0f} degrees across spots. Either turn it "
               f"more (at least {MIN_ROTATION_SPREAD_DEG:.0f}) between spots, or measure "
               "the ball position on the box and pass --ball-offset X Y Z.")
         return False
 
-    r, t, offset, fit = solve(cam, poses, offset)
     check = check_errors(cam, poses, args.ball_offset)
     base_points = np.einsum("nij,j->ni", poses[:, :3, :3], offset) + poses[:, :3, 3]
 
     print("\nError at each spot:")
     print("  fit   = how well this spot agrees with the calibration")
-    print("  check = error when this spot is left out and predicted (real-world accuracy)")
+    print("  check = error when this spot is left out and predicted")
     bad = np.median(check) * 2.5
     for i, f, c in zip(numbered, fit, check):
         flag = f"   <-- bad spot? add --drop {i}" if c > bad and c > 0.01 else ""
@@ -413,14 +434,16 @@ def report_and_save(samples, serial, args):
 def wait_for_line(rs, cv2, pipeline, align, args, prompt):
     """input() that keeps the preview window alive on Linux."""
     print(prompt, end="", flush=True)
-    if not args.preview:
-        return sys.stdin.readline().strip()
-    import select
-    while True:
-        live_preview(rs, cv2, pipeline, align, args)
-        ready, _, _ = select.select([sys.stdin], [], [], 0.03)
-        if ready:
-            return sys.stdin.readline().strip()
+    if args.preview:
+        import select
+
+        while True:
+            live_preview(rs, cv2, pipeline, align, args)
+            ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+            if ready:
+                break
+    line = sys.stdin.readline()
+    return line.strip() if line else "quit"
 
 
 def collect(args):
@@ -458,6 +481,7 @@ def collect(args):
             if cmd == "undo":
                 if samples:
                     samples.pop()
+                    save_json(args.samples, {"camera_serial": serial, "samples": samples})
                     print("  removed last spot")
                 continue
             if cmd == "solve":
@@ -531,10 +555,10 @@ def main():
     args = parser.parse_args()
 
     if args.refit:
-        saved = json.loads(args.refit.read_text())
         try:
+            saved = json.loads(args.refit.read_text())
             ok = report_and_save(saved["samples"], saved.get("camera_serial"), args)
-        except ValueError as exc:
+        except (OSError, KeyError, TypeError, ValueError) as exc:
             print(f"Could not solve: {exc}", file=sys.stderr)
             ok = False
         return 0 if ok else 1
