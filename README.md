@@ -125,7 +125,15 @@ python -B scripts/calibrate_camera_live.py --robot manual --preview
 ```
 
 At each stationary pose, press Enter and paste the 16 numbers from the
-Panda's measured `O_T_EE`. Record 10-15 poses spread across the catch area.
+Panda's measured `O_T_EE`. If your ROS 1 workspace already publishes arm
+state, the calibrator can read it directly. For example, with Franka Interface:
+
+```sh
+python -B scripts/calibrate_camera_live.py --robot ros --preview \
+  --ros-topic /robot_state_publisher_node_1/robot_state
+```
+
+Record 10-15 poses spread across the catch area.
 Tilt the wrist about different axes at several poses so the solver can
 separate the ball offset from camera translation. If the ball center has
 a measured offset in the end-effector frame, supply `--ball-offset X Y Z`

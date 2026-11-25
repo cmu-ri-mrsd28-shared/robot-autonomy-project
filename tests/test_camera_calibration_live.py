@@ -1,4 +1,5 @@
 import importlib
+import sys
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,3 +62,39 @@ def test_terminal_end_of_input_exits(live_tool, monkeypatch, line, expected):
     monkeypatch.setattr("sys.stdin", StringIO(line))
     args = SimpleNamespace(preview=False)
     assert live_tool.wait_for_line(None, None, None, None, args, "prompt") == expected
+
+
+
+@pytest.mark.parametrize(
+    ("topic", "message_type"),
+    [
+        ("/franka_state_controller/franka_states", "franka_msgs/FrankaState"),
+        ("/robot_state_publisher_node_1/robot_state", "franka_interface_msgs/RobotState"),
+    ],
+)
+def test_ros_pose_reads_the_advertised_state_type(live_tool, monkeypatch, topic, message_type):
+    pose = np.eye(4)
+    pose[:3, 3] = [0.42, -0.03, 0.34]
+    msg_type = type("ArmState", (), {})
+    seen = []
+
+    def message_class(name):
+        seen.append(name)
+        return msg_type
+
+    def wait_for_message(name, cls, timeout):
+        assert (name, cls, timeout) == (topic, msg_type, 2.0)
+        return SimpleNamespace(O_T_EE=pose.flatten(order="F"))
+
+    monkeypatch.setitem(sys.modules, "rospy", SimpleNamespace(
+        init_node=lambda *args, **kwargs: None,
+        resolve_name=lambda name: name,
+        get_published_topics=lambda: [(topic, message_type)],
+        wait_for_message=wait_for_message,
+    ))
+    monkeypatch.setitem(sys.modules, "roslib", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "roslib.message", SimpleNamespace(
+        get_message_class=message_class,
+    ))
+    np.testing.assert_array_equal(live_tool.RosPose(topic).read(), pose)
+    assert seen == [message_type]

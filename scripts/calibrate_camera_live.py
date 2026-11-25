@@ -17,8 +17,10 @@ A point pair CSV is also saved for calibrate_camera.py to cross-check the fit.
 The ball must be still. This script does not move the robot.
 
 Examples:
-  # Read the robot pose over ROS 1 (franka_ros):
+  # Read the robot pose over ROS 1 (franka_ros or Franka Interface):
   python scripts/calibrate_camera_live.py --robot ros --preview
+  python scripts/calibrate_camera_live.py --robot ros --preview \
+    --ros-topic /robot_state_publisher_node_1/robot_state
   # Read the robot pose with franky (libfranka Python bindings):
   python scripts/calibrate_camera_live.py --robot franky --robot-ip 172.16.0.2 --preview
   # Type or paste the robot pose by hand:
@@ -280,14 +282,28 @@ def column_major_to_matrix(values):
 
 
 class RosPose:
-    """Read O_T_EE from franka_ros (ROS 1)."""
+    """Read the measured O_T_EE from a ROS 1 arm-state publisher."""
 
     def __init__(self, topic):
-        import rospy
-        from franka_msgs.msg import FrankaState
-        self.rospy, self.msg_type, self.topic = rospy, FrankaState, topic
+        try:
+            import rospy
+            from roslib.message import get_message_class
+        except ImportError as exc:
+            raise RuntimeError("Source the ROS 1 workspace in this Python environment") from exc
+
         rospy.init_node("catchbox_camera_calibration", anonymous=True,
                         disable_signals=True)
+        self.rospy = rospy
+        self.topic = rospy.resolve_name(topic)
+        message_type = dict(rospy.get_published_topics()).get(self.topic)
+        if message_type is None:
+            raise RuntimeError(f"No publisher on {self.topic}. Check the ROS master and --ros-topic.")
+        if message_type not in ("franka_msgs/FrankaState", "franka_interface_msgs/RobotState"):
+            raise RuntimeError(f"{self.topic} publishes {message_type}, expected Panda arm state")
+        self.msg_type = get_message_class(message_type)
+        if self.msg_type is None:
+            package = message_type.split("/")[0]
+            raise RuntimeError(f"Cannot import {message_type}. Source the workspace with {package}.")
 
     def read(self):
         msg = self.rospy.wait_for_message(self.topic, self.msg_type, timeout=2.0)
@@ -534,7 +550,7 @@ def main():
                         help="How to read the robot pose (default manual)")
     parser.add_argument("--robot-ip", default="172.16.0.2", help="Robot IP for --robot franky")
     parser.add_argument("--ros-topic", default="/franka_state_controller/franka_states",
-                        help="franka_msgs/FrankaState topic for --robot ros")
+                        help="ROS 1 Panda arm-state topic (FrankaState or RobotState)")
     parser.add_argument("--ball-offset", type=float, nargs=3, metavar=("X", "Y", "Z"),
                         help="Measured ball center in the end-effector frame (m). "
                              "If omitted, it is solved from wrist rotations.")
@@ -571,7 +587,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped. Recorded spots are saved in", args.samples)
     except RuntimeError as exc:
-        print(f"Camera error: {exc}", file=sys.stderr)
+        print(f"Calibration error: {exc}", file=sys.stderr)
         return 1
     return 0
 
