@@ -1,0 +1,15 @@
+{
+  "seed": 20270521,
+  "counts": {
+    "movement_required": 50,
+    "overhead_drops": 50
+  },
+  "rejections": {
+    "release_prediction": 27762,
+    "crossing_or_early_contact": 657,
+    "not_clear_miss": 928,
+    "crossing_outside_sphere": 46,
+    "ik_or_time": 4
+  },
+  "note": "Overhead drops are not guaranteed to bounce. Movement-required bank is conditioned on stationary miss and feasibility; not a general throw distribution."
+}

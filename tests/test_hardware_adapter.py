@@ -70,6 +70,7 @@ def adapter(monkeypatch):
 def plan_to(adapter, goal):
     adapter.goal = adapter.space.clamp(goal)
     adapter.goal_time, adapter.input_fault = time.monotonic(), False
+    adapter.measured_time = time.monotonic()
     adapter.plan_once()
     return adapter.kin.position(adapter.joint_goal)
 
@@ -115,7 +116,23 @@ def test_policy_frame_shifts_observations_and_targets():
     for a in ([1, 1, 1], [-1, 1, -1], [1, 0, 0]):              # clamped to the simulated workspace
         assert np.linalg.norm(frame.target(a) - frame.offset - sim_center) <= .2 + 1e-9
     obs = np.arange(25, dtype=np.float32) / 10
+    obs[23]=1.0
     robot_obs = obs.copy()
     for s in (slice(0, 3), slice(9, 12), slice(15, 18)):
         robot_obs[s] += frame.offset
     np.testing.assert_allclose(frame.observation(robot_obs), obs, atol=1e-6)
+
+
+def test_stale_robot_feedback_holds_even_when_a_target_is_fresh(adapter):
+    plan_to(adapter, np.array(ORIGIN) + [0, .03, 0])
+    adapter.measured_time=time.monotonic()-1
+    adapter.plan_once()
+    np.testing.assert_allclose(adapter.joint_goal, adapter.limiter.q)
+
+
+def test_return_uses_measured_opening_after_three_seconds(adapter):
+    shifted=np.array(HOME);shifted[0]+=.08
+    adapter.measured_q=shifted.copy();adapter.limiter.q=shifted.copy()
+    adapter.measured_time=time.monotonic();adapter.goal=None;adapter.goal_time=time.monotonic()-3.1
+    adapter.plan_once()
+    assert np.linalg.norm(adapter.kin.position(adapter.joint_goal)-np.array(ORIGIN)) < .005

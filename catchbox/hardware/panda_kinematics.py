@@ -50,3 +50,18 @@ class PandaKinematics:
     def position(self, q):
         m = tool_pose(q)
         return m[:3, 3] + m[:3, :3] @ self.offset
+
+    def state(self, q, dq):
+        """Opening position and world-frame linear/angular velocity from measured joints."""
+        q=np.asarray(q,dtype=float);dq=np.asarray(dq,dtype=float)
+        if q.shape!=(7,) or dq.shape!=(7,) or not np.isfinite(np.r_[q,dq]).all():
+            raise ValueError('Expected finite seven-joint positions and velocities')
+        m=tool_pose(q);r=m[:3,:3];pos=m[:3,3]+r@self.offset
+        jp=np.empty((3,7));jw=np.empty((3,7));eps=1e-6
+        for i in range(7):
+            d=np.zeros(7);d[i]=eps
+            plus=tool_pose(q+d);minus=tool_pose(q-d)
+            jp[:,i]=((plus[:3,3]+plus[:3,:3]@self.offset)-(minus[:3,3]+minus[:3,:3]@self.offset))/(2*eps)
+            dr=(plus[:3,:3]-minus[:3,:3])/(2*eps);skew=dr@r.T
+            jw[:,i]=[(skew[2,1]-skew[1,2])/2,(skew[0,2]-skew[2,0])/2,(skew[1,0]-skew[0,1])/2]
+        return pos,r,jp@dq,jw@dq
