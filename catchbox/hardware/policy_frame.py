@@ -27,8 +27,10 @@ class PolicyFrame:
         obs = np.array(robot_observation, dtype=np.float32)
         if obs.shape != (OBSERVATION_SIZE,):
             raise ValueError(f'Expected {OBSERVATION_SIZE} observation values')
-        for s in POSITION_SLICES:
+        for s in POSITION_SLICES[:2]:
             obs[s] -= self.offset
+        if obs[23] == 1:
+            obs[POSITION_SLICES[2]] -= self.offset
         return np.clip(obs, -10, 10)
 
     def target(self, action):

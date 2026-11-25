@@ -161,10 +161,41 @@ stream on this branch.
 
 `LimitedPoseCatchCore` receives 25 values in this order: box opening position (3), linear velocity / 3 (3), angular velocity / 3 (3), ball position (3), ball velocity / 5 (3), predicted intercept position (3), predicted intercept velocity / 5 (3), time to intercept (1), and tracking-valid, prediction-valid and currently-in-box flags (3). The complete observation is clipped to [-10, 10]. Positions use the simulation world frame in meters; velocities use meters or radians per second before scaling. Invalid predictions are zeroed. See `PoseCatchCore.observation()` for the exact contract.
 
-The model outputs three normalized values for the desired box-opening position relative to its fixed start. Restricted IK computes targets for joints 1, 4 and 6; joint 6 compensates for joint 4 to keep the box level. A simulation servo tracks those targets at 1 kHz. The decision interval is 20 ms. The hardware controller, safety layer, and camera-to-robot integration have not been implemented.
+The model outputs three normalized values for the desired box-opening position relative to its fixed start. Restricted IK computes targets for joints 1, 4 and 6; joint 6 compensates for joint 4 to keep the box level. A simulation servo tracks those targets at 1 kHz. The decision interval is 20 ms. The Python hardware adapter and CPU policy node are prototypes; camera integration and validated physical safety controls remain incomplete.
 
 For camera integration, see the [camera implementation guide](docs/CAMERA_IMPLEMENTATION.md). The original model's 60-value residual interface is separate and must not be mixed with the current checkpoint.
 
 ## Hardware prototype
 
-The [hardware guide](docs/HARDWARE_ROS1.md) covers origin calibration, the FrankaPy motion checks, and the ROS adapter that streams restricted-IK joint targets through FrankaPy. The adapter has not been run on the robot yet; motion is disabled in its configuration. Camera-to-policy integration remains to be implemented.
+The [hardware guide](docs/HARDWARE_ROS1.md) covers calibration, robot-state feedback, CPU model inference, the FrankaPy ROS adapter, mock inputs and logs. The integrated stack has not been tested on the robot; motion is disabled in its configuration. Camera-to-policy integration remains to be implemented.
+
+## Architecture
+
+![ROS nodes and topics on the robot](docs/images/ros_architecture.svg)
+
+The ball tracker publishes the ball in `panda_link0`; `model_node.py` turns it and the box state into the policy's 25 inputs (through `PolicyFrame`) and publishes a box-opening target. `adapter.py` clamps the target into the 0.2 m sphere above the floor, solves restricted IK and streams smoothed joint targets to FrankaPy's `franka-interface`. `robot_state.py` reads the robot through FrankaPy and publishes the measured joints and box state. `send_target.py` publishes manual test targets instead of the model. Nothing publishes the ball on ROS yet: `track_ball.py` does not.
+
+| Topic | Type | Published by | Used by |
+|---|---|---|---|
+| `/catchbox/ball_state` | `nav_msgs/Odometry` | ball tracker (not built yet); `mock_inputs` | `model_node` |
+| `/catchbox/ball_in_box` | `std_msgs/Int8` | ball tracker (not built yet); `mock_inputs` | `model_node` |
+| `/catchbox/box_state` | `nav_msgs/Odometry` | `robot_state` / `mock_robot` | `model_node` |
+| `/catchbox/robot_joints` | `sensor_msgs/JointState` | `robot_state` / `mock_robot` | `adapter` |
+| `/catchbox_command_adapter/opening_target` | `geometry_msgs/PointStamped` | `model_node` or `send_target` | `adapter` |
+| `/catchbox_command_adapter/joint_target` | `sensor_msgs/JointState` | `adapter` (every command) | `mock_robot` |
+| FrankaPy sensor topic | `SensorDataGroup` | `adapter` (motion on) | `franka-interface` |
+
+- The adapter holds until `/catchbox/robot_joints` is fresh, so run `robot_state.py` (or `mock_robot.py`) with it.
+- Run only one publisher of `box_state` and `robot_joints`: `robot_state`, `mock_robot` or `mock_inputs --mock-box-state`.
+- Run only one of `model_node` and `send_target`; both publish `opening_target`.
+
+## Testing
+
+```sh
+docker build -t catchbox-ros-test .
+docker run --rm --network none catchbox-ros-test
+```
+
+![ROS nodes and topics in the hardware-free test](docs/images/ros_testing.svg)
+
+The test runs the same nodes as on the robot, with mock stand-ins for the ball tracker and the robot. It first sends targets directly to the adapter (as `send_target` would), checks they reach the fake robot, then checks hold and return to center. Finally it starts `model_node` and `mock_inputs` and checks the full chain: fake ball, 25 model inputs, policy targets, adapter joint stream. The adapter runs with `--mock-robot`, which forces motion off and never connects to FrankaPy. `mock_robot.py` follows commanded joints instantly; it is not a dynamics simulation. See the [hardware guide](docs/HARDWARE_ROS1.md#hardware-free-ros-test-in-docker) for details.
