@@ -30,7 +30,21 @@ The node loads the steady-motion actor. The camera publisher must continuously s
 
 Status and in-box messages must be sent continuously; they are receipt-timed because Int8 has no timestamp. An inactive status (`-1`), missing or stale state withholds targets, so the adapter holds and then returns after three seconds. Fresh hidden-ball status deliberately permits inference. The camera must distinguish an active but hidden ball from no active ball; otherwise it can keep the arm receiving targets. Ball and box timestamps for visible balls must be within 50 ms and no older than 200 ms. The real ROS camera publisher and in-box estimation are not implemented or validated, and independently published Int8 messages do not guarantee a synchronized camera frame. Never assume a hidden ball is inside without evidence.
 
-All three scripts write JSON-lines logs under `logs/`: `robot_state.jsonl` (measured joints, opening and poll/FK duration), `model.jsonl` (observation, action, target, sensor ages and inference duration) and `adapter.jsonl` (target receipt, mode, planning duration and sampled joint commands). ROS stamps allow correlating messages; wall and monotonic timestamps are also recorded. These logs do not measure camera capture-to-robot latency unless the camera supplies a synchronized estimate timestamp. Inspect dropped events if the asynchronous log queue fills.
+The scripts write JSON-lines logs under `logs/`: `robot_state.jsonl` (measured joints, joint velocities, opening and poll/FK duration), `model.jsonl` (observation, action, target, input-wait reasons, sensor ages and inference duration), `adapter.jsonl` (target receipt, mode, planning duration and every streamed joint command), and `mock_directions.jsonl` (mock throw and phase markers). ROS stamps allow correlating messages; wall and monotonic timestamps are also recorded. These logs do not measure camera capture-to-robot latency unless the camera supplies a synchronized estimate timestamp. Each cleanly stopped logger emits a `log_summary` with the number of dropped events; an unclean stop may omit this summary. These are User PC command and polling logs, not 1 kHz internal control-PC measurements; joint position and velocity are separate polls and the reported timestamp is after polling.
+
+### Share a recorded run
+
+The three files in `logs/` are ignored by Git and append across node restarts. Save only the time window you want to share:
+
+```sh
+python3 scripts/save_run.py right-left-test --minutes 5
+git add shared-runs/right-left-test
+git commit -m "Add right-left test logs"
+```
+
+Use a different short label for each saved run. This copies records from the requested time window to `shared-runs/<label>/`, including mock phase markers when available, timestamps, record counts, the configuration file as it exists at save time, the Git commit and the actor checksum; it does not alter the live logs. If a node used a non-default configuration, supply `--config path/to/configuration.yaml`; if nodes used different files, capture each separately. The configuration snapshot is not proof of its contents at run time if edited before saving. Stop the nodes first when possible so queued records are flushed. Check the counts: an empty file means that node recorded nothing in the selected window. The nodes' computer clocks must agree for cross-machine comparisons.
+
+Only save runs worth sharing. You may remove a saved run from the current checkout later, but Git retains it in history; use a disposable branch if you don't want the recording in long-term history. The command never deletes existing logs.
 
 ## Mock pipeline
 
@@ -44,6 +58,18 @@ python3 -m catchbox.hardware.mock_inputs --seconds 10
 ```
 
 Watch `/catchbox/box_state`, `/catchbox_command_adapter/opening_target` and `/catchbox_command_adapter/joint_target` with `rostopic echo`. The real robot state publisher reads but does not move the robot. The mock publisher supplies fake ball data only; use `--mock-box-state` instead of starting `robot_state` to test the model alone without hardware. The real adapter still initializes FrankaPy even in dry-run mode. For a direct mock target through IK and smoothing, use `python3 -m catchbox.hardware.send_target left --distance 0.03 --execute` with adapter motion disabled. A physical movement test is separate: review the calibration and floor, enable the adapter explicitly, and validate on the station with a controlled small move. The full stack has not yet been tested there.
+
+### Labeled mock throws
+
+With `robot_state`, `adapter`, and `model_node` running, and no other ball publisher, run:
+
+```sh
+python3 -m catchbox.hardware.mock_directions
+```
+
+This publishes one simulated throw each to left (+Y), right (-Y), forward (+X), and back (-X), with landing points 5 cm from the calibrated center. It prints each point, then sends a **simulated**, not detected, in-box flag for one second. Four seconds of no active ball follows; the adapter starts returning toward center after three seconds. This does not guarantee the arm reaches center before the next throw. A moving robot can respond differently from the labels: the learned policy determines the targets. Each predicted landing is checked inside the 20 cm sphere at the fixed opening height. The sphere check applies to landing points, not the robot's physical envelope.
+
+Use `--direction left` (or `right`, `forward`, `back`) to run one example. Use `--distance 0.03` for a 3 cm landing offset. Up/down landing points cannot be represented by the existing fixed-height intercept predictor. Reducing `--distance` does not directly limit robot velocity; the adapter's configured velocity/acceleration limits control that. If motion is enabled these synthetic inputs can move the real robot.
 
 ## Setup
 
