@@ -4,7 +4,14 @@
 
 Provide the controller with the ball’s 3D center position and velocity in the Franka base frame, with timestamps and a tracking-valid flag. Track the incoming flight and the region around the box. Provide a live in-box estimate that can return to false if the ball reappears outside. The RealSense scripts already provide camera-frame tracking; camera-to-base calibration, in-box estimation and hardware integration remain to be built.
 
-Measure tracking latency, error, occlusion and coverage with real throws. The 20 cm sphere limits the simulated desired position and predicted landing point; it does not limit the whole flight or guarantee robot safety.
+- Use a fixed, calibrated stereo/depth setup or synchronized cameras; choose the hardware with the team. A single ordinary RGB image does not directly provide metric 3D position.
+- Provide position in meters and velocity in meters/second, each as `(x, y, z)`. Provide gravity/acceleration in meters/second² as described below.
+- Deliver estimates to the controller at **50 Hz**, with capture and processing timing exposed so latency and stale frames are detectable. The camera may need a higher frame rate; determine it from measured tracking performance rather than assuming 50 Hz is sufficient.
+- Calibrate the camera-to-robot-base transform and validate 3D error and latency over the intended flight volume, including near the box and under occlusion.
+- Report lost, stale, ambiguous or low-confidence tracking explicitly. Never turn an invalid measurement into a believable zero position.
+- Run the tracker in observation-only mode. The paired-point RGB calibration and tracker commands are in the [README](../README.md#report-ball-coordinates-in-the-panda-base-frame).
+
+The current checkpoint receives more than camera data: it also needs robot, box, prediction and controller state. The camera subsystem must not fabricate those other inputs.
 
 ## Instructions for implementation
 

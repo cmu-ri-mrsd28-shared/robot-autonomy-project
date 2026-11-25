@@ -2,7 +2,7 @@
 
 A MuJoCo / robosuite simulation of a Franka catching a table-tennis ball in a 3D-printed box. The gripper holds the box handle; a CrossQ policy proposes a box-opening position, which is converted to joint targets using inverse kinematics.
 
-**Robot control runs in simulation.** The standalone RealSense D435 tracker reports ball position and velocity in camera coordinates. Connecting those estimates to a physical Franka requires camera-to-base calibration and a hardware control adapter. Use the simulated torque controller only in MuJoCo.
+**Robot control runs in simulation.** The standalone RealSense tracker reports ball position and velocity in camera coordinates or in the Franka base frame with a supplied calibration.
 
 ## Model and results
 
@@ -111,7 +111,53 @@ It reads each fresh pair, calls `detect_ball()` for the 2D candidate, then calls
 [check_camera.py](scripts/check_camera.py) owns the shared camera startup and
 cleanup and can also be run by itself to inspect the raw streams.
 
-## Model interface
+
+### Report ball coordinates in the Panda base frame
+
+Keep the camera fixed. From the camera environment, open the RGB preview
+and click a stationary mark on a flat, matte surface.
+
+```sh
+python -B scripts/check_camera.py --sample-points
+```
+
+For each mark, record the printed camera XYZ and the XYZ of that **same
+physical point** in the Panda base frame, both in meters. Use surveyed
+reference points or a fixture whose marked point has a known robot-base
+position. A flange or TCP reading is usable directly only if it describes
+the mark itself. Spread at least six fit marks across the expected flight
+volume, at different heights and depths, and reserve at least three
+separate marks to check the fit.
+
+Create `camera_points.csv` with this header. End each data row with `fit`
+or `check`.
+
+```csv
+camera_x,camera_y,camera_z,base_x,base_y,base_z,set
+```
+
+Use the camera serial printed by the preview in place of `CAMERA_SERIAL`.
+
+```sh
+python -B scripts/calibrate_camera.py camera_points.csv \
+  --serial CAMERA_SERIAL --output camera_to_base.json
+```
+
+Review the RMS and largest error for the `check` points before using the
+coordinates. If the errors are too large for the box opening, check point
+correspondences and depth quality before refitting. Recalibrate whenever the
+camera moves relative to the base.
+
+```sh
+python -B scripts/track_ball.py --calibration camera_to_base.json --preview
+```
+
+Valid detections print `base XYZ` in meters. Velocity, when available, is
+rotated into the same base frame in m/s. The 50 ms look-ahead is still a
+linear extrapolation. This calibration uses the 640 × 480 RGB optical
+stream on this branch.
+
+## Interface
 
 `LimitedPoseCatchCore` receives 25 values in this order: box opening position (3), linear velocity / 3 (3), angular velocity / 3 (3), ball position (3), ball velocity / 5 (3), predicted intercept position (3), predicted intercept velocity / 5 (3), time to intercept (1), and tracking-valid, prediction-valid and currently-in-box flags (3). The complete observation is clipped to [-10, 10]. Positions use the simulation world frame in meters; velocities use meters or radians per second before scaling. Invalid predictions are zeroed. See `PoseCatchCore.observation()` for the exact contract.
 

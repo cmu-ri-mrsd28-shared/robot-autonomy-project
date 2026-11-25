@@ -194,7 +194,7 @@ def show_detection(cv2, image, ball, valid, status):
     return key not in (ord("q"), 27) and cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) >= 1
 
 
-def track(rs, cv2, np, pipeline, args):
+def track(rs, cv2, np, pipeline, args, *, camera_to_base=None):
     """Process fresh frame pairs and display the detection and its measured depth."""
     align = rs.align(rs.stream.color)
     previous_gray = None
@@ -239,6 +239,16 @@ def track(rs, cv2, np, pipeline, args):
             rs, np, align, frames, color, depth, ball, args.max_skew_ms
         )
         velocity = motion_history.update(np, timestamp_ms, position)
+        # Keep the motion fit in the measured frame; a fixed transform rotates velocity.
+        frame_label = "camera"
+        base_status = ""
+        if camera_to_base is not None and position is not None:
+            position = camera_to_base.point(position)
+            x, y, z = position
+            base_status = f"base XYZ=({x:+.3f}, {y:+.3f}, {z:+.3f}) m"
+            frame_label = "base"
+            if velocity is not None:
+                velocity = camera_to_base.vector(velocity)
         motion = "velocity=unavailable"
         if velocity is not None:
             vx, vy, vz = velocity
@@ -246,20 +256,23 @@ def track(rs, cv2, np, pipeline, args):
             # calibrated gravity direction and box opening in the Franka frame.
             fx, fy, fz = position + velocity * (LOOKAHEAD_MS / 1000)
             motion = (
-                f"velocity=({vx:+.2f}, {vy:+.2f}, {vz:+.2f}) m/s | "
-                f"linear XYZ +{LOOKAHEAD_MS} ms=({fx:+.3f}, {fy:+.3f}, {fz:.3f}) m"
+                f"{frame_label} velocity=({vx:+.2f}, {vy:+.2f}, {vz:+.2f}) m/s | "
+                f"{frame_label} linear XYZ +{LOOKAHEAD_MS} ms="
+                f"({fx:+.3f}, {fy:+.3f}, {fz:+.3f}) m"
             )
 
         # The detector runs on every fresh pair. This only limits terminal output.
         if args.every_frame or now - last_report >= 0.1 or finished:
             message = f"t={timestamp_ms:.1f} ms | valid={position is not None} | {status}"
             if position is not None:
+                if base_status:
+                    message += f" | {base_status}"
                 message += f" | {motion}"
             print(message, flush=True)
             last_report = now
 
         if args.preview and not show_detection(
-            cv2, image, ball, position is not None, status
+            cv2, image, ball, position is not None, base_status or status
         ):
             break
         if finished:
@@ -282,6 +295,7 @@ def main():
                         help="Minimum white-pixel brightness (0–255, default 170)")
     parser.add_argument("--max-skew-ms", type=float, default=12.0,
                         help="Maximum RGB-depth timestamp difference (default 12 ms)")
+    parser.add_argument("--calibration", help="Camera-to-Franka-base calibration JSON")
     args = parser.parse_args()
     if not 0 <= args.brightness <= 255:
         parser.error("--brightness must be between 0 and 255")
@@ -306,7 +320,18 @@ def main():
     try:
         with camera_session(rs, fps=args.fps) as (pipeline, profile):
             print_stream_profiles(rs, profile)
-            track(rs, cv2, np, pipeline, args)
+            camera_to_base = None
+            if args.calibration:
+                from calibrate_camera import load_calibration
+
+                serial = profile.get_device().get_info(rs.camera_info.serial_number)
+                try:
+                    camera_to_base = load_calibration(args.calibration, serial)
+                except (OSError, ValueError, TypeError) as exc:
+                    print(f"Calibration error: {exc}", file=sys.stderr)
+                    return 1
+                print("Calibrated outputs use the Franka base frame.", flush=True)
+            track(rs, cv2, np, pipeline, args, camera_to_base=camera_to_base)
     except KeyboardInterrupt:
         print("\nBall tracker stopped.")
     except (RuntimeError, cv2.error) as exc:
