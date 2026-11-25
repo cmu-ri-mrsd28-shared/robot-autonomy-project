@@ -1,0 +1,25 @@
+{
+  "label": "left-right-test",
+  "window_start_utc": "2026-11-25T18:44:06.615240+00:00",
+  "window_end_utc": "2026-11-25T18:46:06.615240+00:00",
+  "minutes": 2.0,
+  "git_commit": null,
+  "tracked_files_modified": null,
+  "records": {
+    "model.jsonl": 181,
+    "adapter.jsonl": 3389,
+    "robot_state.jsonl": 4734,
+    "mock_directions.jsonl": 12
+  },
+  "dropped_events_by_file": {
+    "model.jsonl": 0,
+    "adapter.jsonl": 0,
+    "robot_state.jsonl": 0,
+    "mock_directions.jsonl": 0
+  },
+  "config_source": "catchbox/hardware/configuration.yaml",
+  "config_sha256": "473c78d6d388490842b14b43d5702b7b786169316ca27333b8a0be98a52dbf2c",
+  "actor_source": "artifacts/steady-motion-model/actor.npz",
+  "actor_sha256": "92255023e617c18e520cef13097df082cc9f89fadea1342ada650e6cbb225f8a",
+  "notes": "Filtered by each record wall_time_s. Clocks must be synchronized across machines; last incomplete line is omitted."
+}

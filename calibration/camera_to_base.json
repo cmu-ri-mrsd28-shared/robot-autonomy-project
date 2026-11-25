@@ -1,0 +1,54 @@
+{
+  "source_frame": "realsense_rgb_optical",
+  "target_frame": "franka_base",
+  "camera_serial": "832412070191",
+  "translation_units": "m",
+  "rotation": [
+    [
+      -0.6222648249976477,
+      -0.1911009131525057,
+      -0.7591224727031376
+    ],
+    [
+      0.7786182108748099,
+      -0.05091242556645543,
+      -0.6254291379661248
+    ],
+    [
+      0.08087131299018867,
+      -0.9802491346158989,
+      0.18047566268066204
+    ]
+  ],
+  "translation_m": [
+    2.082019801503156,
+    0.6250852440931923,
+    0.2623475226945383
+  ],
+  "fit_error_mm": {
+    "count": 21,
+    "rms": 28.779194458753842,
+    "max": 79.37407680829281
+  },
+  "check_error_mm": {
+    "count": 21,
+    "rms": 37.616094827568816,
+    "max": 111.24770539519162
+  },
+  "check_method": "leave-one-out over recorded spots",
+  "made_by": "calibrate_camera_live.py",
+  "ball_offset_in_ee_m": [
+    0.044670115903025526,
+    0.03156048229744395,
+    -0.06011582103274436
+  ],
+  "ball_offset_was_solved": true,
+  "dropped_spots": [],
+  "wrist_rotation_spread_deg": 59.226447139289405,
+  "coverage_m": [
+    0.21029450100603136,
+    0.38879528598918206,
+    0.4683561470722145
+  ],
+  "created_utc": "2026-11-25T20:51:26+00:00"
+}

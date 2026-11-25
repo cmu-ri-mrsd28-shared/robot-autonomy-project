@@ -15,7 +15,7 @@ calibration:
 # Adapter node (python3 -m catchbox.hardware.adapter), streaming joint targets through FrankaPy.
 adapter:
   # false: plan and publish what would be sent, without moving the robot.
-  enable_motion: false
+  enable_motion: true
   # Joint targets streamed to FrankaPy per second.
   rate_hz: 100
   # Per-joint limits of the streamed commands, rad/s and rad/s^2. Simulation: ~1 / 4 keeps most catches.
