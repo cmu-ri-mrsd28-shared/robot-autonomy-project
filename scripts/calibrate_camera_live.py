@@ -483,7 +483,7 @@ def collect(args):
              "franky": lambda: FrankyPose(args.robot_ip),
              "manual": ManualPose}[args.robot]()
 
-    with camera_session(rs, fps=30) as (pipeline, profile):
+    with camera_session(rs, fps=args.fps) as (pipeline, profile):
         print_stream_profiles(rs, profile)
         serial = profile.get_device().get_info(rs.camera_info.serial_number)
         samples = []
@@ -571,6 +571,8 @@ def main():
                         help="Color of the calibration ball (default white)")
     parser.add_argument("--brightness", type=int, default=170,
                         help="Minimum ball-pixel brightness (0-255, default 170)")
+    parser.add_argument("--fps", type=int, choices=(15, 30), default=30,
+                        help="RGB and depth frame rate (default 30)")
     parser.add_argument("--average-s", type=float, default=1.0,
                         help="Seconds of frames averaged per spot (default 1)")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="Result JSON path")

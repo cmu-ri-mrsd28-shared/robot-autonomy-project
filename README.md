@@ -74,6 +74,10 @@ The Python package needs a compatible wheel for your platform. See the
 [RealSense Python SDK installation guide](https://github.com/realsenseai/librealsense/blob/master/wrappers/python/readme.md)
 for supported environments.
 
+If the stream stalls at 30 fps, try `--fps 15` with `check_camera.py`.
+The live calibration script accepts the same flag. Both modes use
+640 × 480 RGB and depth, so you can resume the same calibration session.
+
 ### Track a white table-tennis ball
 
 ```sh

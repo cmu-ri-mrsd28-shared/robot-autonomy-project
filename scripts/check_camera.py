@@ -183,6 +183,10 @@ def main():
         "--sample-points", action="store_true",
         help="Print camera XYZ when clicking a stationary marker in the RGB preview",
     )
+    parser.add_argument(
+        "--fps", type=int, choices=(15, 30), default=30,
+        help="RGB and depth frame rate (default 30)",
+    )
     args = parser.parse_args()
     if args.sample_points:
         args.preview = True
@@ -223,7 +227,7 @@ def main():
             print("Click the same surveyed mark in the left (RGB) pane for each sample.")
 
     try:
-        with camera_session(rs) as (pipeline, profile):
+        with camera_session(rs, fps=args.fps) as (pipeline, profile):
             print_stream_profiles(rs, profile)
             check_stream(rs, pipeline, args, preview_frame)
     except KeyboardInterrupt:
