@@ -163,12 +163,12 @@ class Adapter:
         threading.Thread(target=self.plan_loop, daemon=True).start()
         self.rospy.loginfo('Adapter running; motion %s', 'ENABLED' if self.motion else 'disabled (dry run)')
         dt, last = 1.0 / self.rate_hz, time.monotonic()
-        last_log=last
         rate = self.rospy.Rate(self.rate_hz)
         try:
             while not self.rospy.is_shutdown():
                 now = time.monotonic()
-                step_dt, last = min(now - last, 3 * dt), now
+                actual_dt = now - last
+                step_dt, last = min(actual_dt, 3 * dt), now
                 with self.lock:
                     q = self.limiter.step(self.joint_goal, step_dt)
                 if not self.space.contains(self.kin.position(q), STREAM_TOLERANCE_M):
@@ -179,9 +179,8 @@ class Adapter:
                 msg = self.JointState()
                 msg.header.stamp, msg.name, msg.position = self.rospy.Time.now(), JOINT_NAMES, q.tolist()
                 self.debug.publish(msg)
-                if self.log is not None and now-last_log>=.1:
-                    self.log.write('joint_command',stamp_s=msg.header.stamp.to_sec(),joints=q.tolist(),loop_ms=1000*step_dt,motion_enabled=self.motion)
-                    last_log=now
+                if self.log is not None:
+                    self.log.write('joint_command',stamp_s=msg.header.stamp.to_sec(),joints=q.tolist(),loop_ms=1000*actual_dt,limiter_step_ms=1000*step_dt,motion_enabled=self.motion)
                 if self.fault is not None and np.max(np.abs(self.limiter.v)) < 1e-4:
                     break
                 rate.sleep()
