@@ -1,0 +1,25 @@
+{
+  "camera_serial": "832412070191",
+  "fps": 30,
+  "frames": 124,
+  "depth_units_m": 0.0010000000474974513,
+  "ball": "orange",
+  "ball_radius_m": 0.02,
+  "intrinsics": {
+    "width": 640,
+    "height": 480,
+    "fx": 614.480224609375,
+    "fy": 614.3602905273438,
+    "ppx": 326.0206604003906,
+    "ppy": 244.1685333251953,
+    "model": "distortion.inverse_brown_conrady",
+    "coeffs": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "camera_frame": "RealSense RGB optical: x right, y down, z forward, meters"
+}
