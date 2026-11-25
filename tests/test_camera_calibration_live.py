@@ -98,3 +98,14 @@ def test_ros_pose_reads_the_advertised_state_type(live_tool, monkeypatch, topic,
     ))
     np.testing.assert_array_equal(live_tool.RosPose(topic).read(), pose)
     assert seen == [message_type]
+
+
+
+@pytest.mark.parametrize(("ball_color", "expected_x"), [("white", 40), ("orange", 110)])
+def test_calibration_detector_selects_ball_color(live_tool, ball_color, expected_x):
+    cv2 = pytest.importorskip("cv2")
+    image = np.full((100, 160, 3), 45, dtype=np.uint8)
+    cv2.circle(image, (40, 50), 10, (255, 255, 255), -1)
+    cv2.circle(image, (110, 50), 10, (0, 165, 255), -1)
+    detections = live_tool.find_still_ball(cv2, image, 170, ball_color)
+    assert [(ball.u, ball.v) for ball in detections] == [(expected_x, 50)]

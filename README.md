@@ -116,9 +116,9 @@ cleanup and can also be run by itself to inspect the raw streams.
 
 ### Report ball coordinates in the Panda base frame
 
-To collect points with the Panda, fix a white 40 mm table-tennis ball to the
+To collect points with the Panda, fix a white or orange 40 mm table-tennis ball to the
 box where the RealSense can see it. Keep the camera fixed and use its RGB
-stream.
+stream. Pass `--ball-color orange` for an orange ball.
 
 ```sh
 python -B scripts/calibrate_camera_live.py --robot manual --preview

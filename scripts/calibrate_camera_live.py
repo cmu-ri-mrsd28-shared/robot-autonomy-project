@@ -180,15 +180,18 @@ def check_errors(camera_points, ee_poses, ball_offset=None):
 
 
 # --------------------------------------------------------------------------
-# Camera: finding a still white ball
+# Camera: finding a still ball
 # --------------------------------------------------------------------------
 
-def find_still_ball(cv2, image, brightness):
-    """Return round white blobs, most circular first. No motion is required."""
+def find_still_ball(cv2, image, brightness, ball_color="white"):
+    """Return round blobs of the selected color, most circular first."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    white = cv2.inRange(hsv, (0, 0, brightness), (179, 75, 255))
-    white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    contours, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if ball_color == "orange":
+        mask = cv2.inRange(hsv, (5, 100, brightness), (27, 255, 255))
+    else:
+        mask = cv2.inRange(hsv, (0, 0, brightness), (179, 75, 255))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     found = []
     for contour in contours:
         (u, v), radius = cv2.minEnclosingCircle(contour)
@@ -202,16 +205,16 @@ def find_still_ball(cv2, image, brightness):
     return [d for _, d in found]
 
 
-def locate(rs, cv2, align, frames, brightness):
+def locate(rs, cv2, align, frames, brightness, ball_color):
     """Ball center in the camera frame for one frame pair, plus the detection."""
     aligned = align.process(frames)
     color, depth = aligned.get_color_frame(), aligned.get_depth_frame()
     if not (color and depth):
         return None, None, None
     image = np.asanyarray(color.get_data())
-    for ball in find_still_ball(cv2, image, brightness):
+    for ball in find_still_ball(cv2, image, brightness, ball_color):
         # estimate_position also checks the blob's size against its depth,
-        # which rejects most white things that are not a 40 mm ball.
+        # which helps reject other objects of the same color.
         position, _ = estimate_position(rs, np, depth, ball)
         if position is not None:
             return position, ball, image
@@ -237,7 +240,7 @@ def average_ball(rs, cv2, pipeline, align, args):
     while time.monotonic() < end:
         frames = pipeline.wait_for_frames(2000)
         frames_seen += 1
-        p, b, img = locate(rs, cv2, align, frames, args.brightness)
+        p, b, img = locate(rs, cv2, align, frames, args.brightness, args.ball_color)
         if img is not None:
             image = img
         if p is not None:
@@ -260,7 +263,7 @@ def live_preview(rs, cv2, pipeline, align, args):
     """Keep the preview window updated while waiting for typed input."""
     frames = pipeline.poll_for_frames()
     if frames:
-        p, ball, image = locate(rs, cv2, align, frames, args.brightness)
+        p, ball, image = locate(rs, cv2, align, frames, args.brightness, args.ball_color)
         if image is not None:
             text = ("ball found  XYZ=({:+.3f}, {:+.3f}, {:.3f}) m".format(*p)
                     if p is not None else "ball NOT found")
@@ -555,8 +558,10 @@ def main():
                         help="Measured ball center in the end-effector frame (m). "
                              "If omitted, it is solved from wrist rotations.")
     parser.add_argument("--preview", action="store_true", help="Show the camera view")
+    parser.add_argument("--ball-color", choices=("white", "orange"), default="white",
+                        help="Color of the calibration ball (default white)")
     parser.add_argument("--brightness", type=int, default=170,
-                        help="Minimum white-pixel brightness (0-255, default 170)")
+                        help="Minimum ball-pixel brightness (0-255, default 170)")
     parser.add_argument("--average-s", type=float, default=1.0,
                         help="Seconds of frames averaged per spot (default 1)")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="Result JSON path")
@@ -569,6 +574,8 @@ def main():
     parser.add_argument("--drop", type=int, nargs="+", metavar="N",
                         help="Spot numbers to leave out when solving")
     args = parser.parse_args()
+    if not 0 <= args.brightness <= 255:
+        parser.error("--brightness must be between 0 and 255")
 
     if args.refit:
         try:
