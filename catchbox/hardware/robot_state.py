@@ -37,7 +37,7 @@ def main():
                 msg.twist.twist.linear.x,msg.twist.twist.linear.y,msg.twist.twist.linear.z=map(float,v)
                 msg.twist.twist.angular.x,msg.twist.twist.angular.y,msg.twist.twist.angular.z=map(float,w)
                 joints.publish(js);opening.publish(msg)
-                log.write('robot_state',stamp_s=stamp.to_sec(),poll_and_fk_ms=1000*(time.monotonic()-started),joints=q.tolist(),opening=p.tolist(),linear_velocity=v.tolist(),angular_velocity=w.tolist())
+                log.write('robot_state',stamp_s=stamp.to_sec(),poll_and_fk_ms=1000*(time.monotonic()-started),joints=q.tolist(),joint_velocities=dq.tolist(),opening=p.tolist(),linear_velocity=v.tolist(),angular_velocity=w.tolist())
             except Exception as exc:
                 rospy.logerr_throttle(2,'Robot state unavailable: %s',exc);log.write('state_error',error=str(exc))
             rate.sleep()

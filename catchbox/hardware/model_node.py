@@ -26,7 +26,7 @@ class ModelNode:
         from std_msgs.msg import Int8
         self.rospy,self.PointStamped,self.log=rospy,PointStamped,log
         self.frame=PolicyFrame(settings);self.actor=actor;self.lock=threading.Lock()
-        self.ball=None;self.box=None;self.flag=None;self.flag_time=0.;self.status=None;self.status_time=0.
+        self.ball=None;self.box=None;self.flag=None;self.flag_time=0.;self.status=None;self.status_time=0.;self.wait_reason=None
         self.pub=rospy.Publisher('/catchbox_command_adapter/opening_target',PointStamped,queue_size=1)
         self.subscribers=[rospy.Subscriber('/catchbox/ball_state',Odometry,self.on_ball,queue_size=1),
                           rospy.Subscriber('/catchbox/box_state',Odometry,self.on_box,queue_size=1),
@@ -47,13 +47,23 @@ class ModelNode:
         with self.lock:self.flag=msg.data if msg.data in (-1,0,1) else None;self.flag_time=time.monotonic()
     def on_status(self,msg):
         with self.lock:self.status=msg.data if msg.data in (-1,0,1,2) else None;self.status_time=time.monotonic()
+    def _withhold(self, reason):
+        if reason != self.wait_reason:
+            self.log.write('input_wait',reason=reason,ros_stamp_s=self.rospy.Time.now().to_sec())
+            self.wait_reason=reason
+        return False
     def step(self):
         with self.lock:ball,box,flag,flag_time,status,status_time=self.ball,self.box,self.flag,self.flag_time,self.status,self.status_time
         mono=time.monotonic();now=self.rospy.Time.now().to_sec()
-        if (box is None or flag is None or status not in (0,1,2) or
-            not 0<=mono-box[4]<=MAX_AGE or not 0<=mono-flag_time<=MAX_AGE or not 0<=mono-status_time<=MAX_AGE or
-            not 0<=now-box[3]<=MAX_AGE):return False
-        if status and (ball is None or not 0<=mono-ball[4]<=MAX_AGE or not 0<=now-ball[3]<=MAX_AGE or abs(ball[3]-box[3])>MAX_SKEW):return False
+        if box is None:return self._withhold('missing_or_invalid_box')
+        if flag is None:return self._withhold('missing_or_invalid_in_box_flag')
+        if status not in (0,1,2):return self._withhold('no_active_ball_or_invalid_status')
+        if not 0<=mono-box[4]<=MAX_AGE or not 0<=now-box[3]<=MAX_AGE:return self._withhold('stale_box')
+        if not 0<=mono-flag_time<=MAX_AGE:return self._withhold('stale_in_box_flag')
+        if not 0<=mono-status_time<=MAX_AGE:return self._withhold('stale_tracking_status')
+        if status and ball is None:return self._withhold('missing_or_invalid_ball')
+        if status and (not 0<=mono-ball[4]<=MAX_AGE or not 0<=now-ball[3]<=MAX_AGE):return self._withhold('stale_ball')
+        if status and abs(ball[3]-box[3])>MAX_SKEW:return self._withhold('ball_box_timestamp_skew')
         started=time.monotonic()
         obs=build_steady_observation(self.frame,box[0],box[1],box[2],ball[0] if status else None,
                                      ball[1] if status else None,status,flag)
@@ -63,7 +73,10 @@ class ModelNode:
             unchanged=(self.box is box and self.flag==flag and self.flag_time==flag_time and self.status==status and self.status_time==status_time and (not status or self.ball is ball))
         mono=time.monotonic();now=self.rospy.Time.now().to_sec()
         if (not unchanged or not 0<=now-box[3]<=MAX_AGE or not 0<=mono-flag_time<=MAX_AGE or not 0<=mono-status_time<=MAX_AGE or
-            (status and not 0<=now-ball[3]<=MAX_AGE)):return False
+            (status and not 0<=now-ball[3]<=MAX_AGE)):return self._withhold('input_changed_or_stale_during_inference')
+        if self.wait_reason is not None:
+            self.log.write('input_resumed',previous_reason=self.wait_reason,ros_stamp_s=self.rospy.Time.now().to_sec())
+            self.wait_reason=None
         out=self.PointStamped();out.header.frame_id=BASE_LINK;out.header.stamp=self.rospy.Time.now()
         out.point.x,out.point.y,out.point.z=map(float,target);self.pub.publish(out)
         self.log.write('inference',ball_stamp_s=ball[3] if status else None,box_stamp_s=box[3],output_stamp_s=out.header.stamp.to_sec(),

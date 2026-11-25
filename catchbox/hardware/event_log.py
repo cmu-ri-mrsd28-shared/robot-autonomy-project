@@ -19,4 +19,6 @@ class EventLog:
             self.file.write(json.dumps(row,allow_nan=False)+'\n')
         self.file.close()
     def close(self):
+        # Report records lost due to a full queue after all earlier writes.
+        self.queue.put(dict(event='log_summary',wall_time_s=time.time(),monotonic_s=time.monotonic(),dropped=self.dropped))
         self.queue.put(None);self.thread.join(timeout=5)
