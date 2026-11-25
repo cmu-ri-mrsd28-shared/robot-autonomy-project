@@ -40,6 +40,8 @@ Distances are from the camera's COLOR lens to the CENTER of the ball, in cm:
 
 Mouse / keys (click the preview window first):
   click   lock on to the ball you clicked
+  v       start/stop RECORDING (same as the RECORD button): video, depth and tracking
+          for scripts/recording_to_sim.py
   p       capture 10 frames (same as clicking the CAPTURE button) into --capture-dir
   k       draw the catch box by hand instead (drag a rectangle; turns off auto-finding)
   c       the box was emptied: clear the in-box count
@@ -61,6 +63,7 @@ import argparse
 from collections import deque
 import csv
 from dataclasses import dataclass
+import json
 import math
 import os
 import sys
@@ -158,15 +161,16 @@ class Measurement:
     source: str       # "depth" or "size"
 
 
-def scene_changed(np, image, background, min_change):
+def scene_changed(np, image, background, min_change, cv2=None, where=None):
     """Pixels that differ from the learned empty scene (True = changed).
 
     Corrects for the camera's automatic brightness/white-balance adjusting
-    when the ball appears.
+    when the ball appears. With cv2 the full-image steps use OpenCV (about 4x
+    faster); with `where` (a True/False image) only those pixels are compared and
+    the rest are left False - much faster when only ball-colored pixels matter.
     """
-    frame = image.astype(np.float32)
     # Global per-channel gain, estimated from every 4th pixel each way (fast, plenty).
-    flat_frame = frame[::4, ::4].reshape(-1, 3)
+    flat_frame = image[::4, ::4].reshape(-1, 3).astype(np.float32)
     flat_bg = background[::4, ::4].reshape(-1, 3)
     gain = np.clip(np.median(flat_frame, axis=0)
                    / np.maximum(np.median(flat_bg, axis=0), 1.0), 0.5, 2.0)
@@ -176,7 +180,18 @@ def scene_changed(np, image, background, min_change):
     if same.mean() > 0.2:
         gain = np.clip(np.median(flat_frame[same], axis=0)
                        / np.maximum(np.median(flat_bg[same], axis=0), 1.0), 0.5, 2.0)
-    return np.abs(frame - background * gain).max(axis=2) >= min_change
+    if where is not None:
+        changed = np.zeros(image.shape[:2], bool)
+        rows, cols = np.nonzero(where)
+        diff = np.abs(image[rows, cols].astype(np.float32) - background[rows, cols] * gain)
+        changed[rows, cols] = diff.max(axis=1) >= min_change
+        return changed
+    if cv2 is None:
+        frame = image.astype(np.float32)
+        return np.abs(frame - background * gain).max(axis=2) >= min_change
+    scaled = cv2.multiply(background, tuple(float(g) for g in gain) + (0.0,))
+    blue, green, red = cv2.split(cv2.absdiff(image.astype(np.float32), scaled))
+    return cv2.max(cv2.max(blue, green), red) >= min_change
 
 
 def ball_mask(cv2, np, image, background, brightness, max_saturation, min_change, loose=False,
@@ -955,7 +970,6 @@ def find_catch_box(cv2, np, image, depth_m, fx, previous=None, tape=None):
     if tape is not None:
         return find_taped_box(cv2, np, hsv, depth_m, fx, previous, tape)
     dark = (hsv[..., 2] < BOX_DARK_VALUE).astype(np.uint8) * 255
-    blue = None
     dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -1051,8 +1065,14 @@ def button_rect(width):
     return width - BUTTON[0] - 12, top + 10, width - 12, top + 10 + BUTTON[1]
 
 
+def record_rect(width):
+    """Record button (x0, y0, x1, y1) in window pixels: left of the capture button."""
+    x0, y0, _, y1 = button_rect(width)
+    return x0 - 12 - BUTTON[0], y0, x0 - 12, y1
+
+
 def draw(cv2, np, image, ball, banner, banner_color, headline, lines, color, box=None,
-         box_label="BOX", button_text="CAPTURE 10"):
+         box_label="BOX", button_text="CAPTURE 10", record_text=None):
     """Show the video (enlarged) with a state banner and a readable panel underneath."""
     preview = cv2.resize(image, None, fx=SCALE, fy=SCALE)
     if box is not None:
@@ -1074,24 +1094,217 @@ def draw(cv2, np, image, ball, banner, banner_color, headline, lines, color, box
         cv2.putText(panel, line, (14, 92 + 34 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.75,
                     WHITE, 2, cv2.LINE_AA)
     shown = np.vstack([preview, panel])
+    if button_text is None:   # no capture button (e.g. the ROS node's preview)
+        cv2.imshow(WINDOW, shown)
+        return cv2.waitKey(1) & 0xFF
     x0, y0, x1, y1 = button_rect(shown.shape[1])
     busy = button_text != "CAPTURE 10"
     cv2.rectangle(shown, (x0, y0), (x1, y1), (0, 140, 255) if busy else (90, 90, 90), -1)
     cv2.rectangle(shown, (x0, y0), (x1, y1), WHITE, 2)
     cv2.putText(shown, button_text, (x0 + 14, y1 - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.85, WHITE, 2,
                 cv2.LINE_AA)
+    if record_text is not None:
+        x0, y0, x1, y1 = record_rect(shown.shape[1])
+        recording = record_text != "RECORD"
+        cv2.rectangle(shown, (x0, y0), (x1, y1), (0, 0, 210) if recording else (90, 90, 90), -1)
+        cv2.rectangle(shown, (x0, y0), (x1, y1), WHITE, 2)
+        cv2.circle(shown, (x0 + 24, (y0 + y1) // 2), 9, WHITE if recording else (0, 0, 230), -1)
+        cv2.putText(shown, record_text, (x0 + 44, y1 - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.85,
+                    WHITE, 2, cv2.LINE_AA)
     cv2.imshow(WINDOW, shown)
     return cv2.waitKey(1) & 0xFF
+
+
+RECORD_FIELDS = ["frame", "t_s", "state", "ball_id", "ball_u", "ball_v", "ball_r_px",
+                 "cam_x_m", "cam_y_m", "cam_z_m", "source", "box_u0", "box_v0", "box_u1",
+                 "box_v1", "box_front_m", "balls_in_box", "visible_in_box", "event"]
+RECORD_MAX_SECONDS = 60.0
+
+
+class Recorder:
+    """RECORD button: save a throw for replay and for recreating it in simulation.
+
+    Each recording is a folder (under --record-dir) with:
+      color.mp4   the raw color video (no drawings)
+      depth.npz   the aligned depth frames (uint16, times depth_units = meters)
+      track.csv   what the tracker saw on every frame: ball pixel, size and camera
+                  XYZ, the box outline and distance, in-box state, events
+      meta.json   camera serial, intrinsics, frame rate, depth units
+    scripts/recording_to_sim.py turns a recording into a MuJoCo replay.
+    """
+
+    def __init__(self, cv2, np, root, intrinsics, serial, fps):
+        self.cv2, self.np, self.root = cv2, np, root
+        self.intrinsics, self.serial, self.fps = intrinsics, serial, fps
+        self.folder = None
+
+    @property
+    def active(self):
+        return self.folder is not None
+
+    def start(self, now):
+        self.folder = os.path.join(self.root, time.strftime("throw_%Y%m%d_%H%M%S"))
+        os.makedirs(self.folder, exist_ok=True)
+        size = (self.intrinsics.width, self.intrinsics.height)
+        self.video = self.cv2.VideoWriter(os.path.join(self.folder, "color.mp4"),
+                                          self.cv2.VideoWriter_fourcc(*"mp4v"), self.fps, size)
+        self.rows, self.depth, self.started, self.units = [], [], now, None
+        print(f"RECORDING to {self.folder} (click STOP or press v to stop)", flush=True)
+
+    def add(self, now, image, aligned, lock, found, events):
+        np = self.np
+        if aligned is not None:
+            self.units = aligned.get_units()
+            depth = np.asanyarray(aligned.get_data()).astype(np.uint16, copy=True)
+        else:
+            depth = np.zeros((self.intrinsics.height, self.intrinsics.width), np.uint16)
+        self.video.write(image)
+        self.depth.append(depth)
+        row = {"frame": len(self.rows), "t_s": f"{now - self.started:.4f}", "state": lock.state,
+               "ball_id": lock.ball_id if lock.ball_id is not None else "",
+               "balls_in_box": len(lock.in_box_balls), "event": " | ".join(events)}
+        if found is not None and lock.state == "LOCKED":
+            d = found.detection
+            row.update(ball_u=d.u, ball_v=d.v, ball_r_px=f"{d.radius:.2f}",
+                       cam_x_m=f"{found.position[0]:.4f}", cam_y_m=f"{found.position[1]:.4f}",
+                       cam_z_m=f"{found.position[2]:.4f}", source=found.source,
+                       visible_in_box=int(lock.in_box_3d(d, found.position)))
+        if lock.box is not None:
+            row.update(zip(("box_u0", "box_v0", "box_u1", "box_v1"), lock.box))
+            if lock.box_front_m is not None:
+                row["box_front_m"] = f"{lock.box_front_m:.3f}"
+        self.rows.append(row)
+        if now - self.started > RECORD_MAX_SECONDS:
+            print(f"Recording reached {RECORD_MAX_SECONDS:.0f} s: stopping.", flush=True)
+            self.stop()
+
+    def stop(self):
+        np = self.np
+        self.video.release()
+        np.savez_compressed(os.path.join(self.folder, "depth.npz"),
+                            depth=np.stack(self.depth) if self.depth else np.zeros((0, 1, 1)))
+        with open(os.path.join(self.folder, "track.csv"), "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=RECORD_FIELDS)
+            writer.writeheader()
+            writer.writerows(self.rows)
+        i = self.intrinsics
+        meta = {"camera_serial": self.serial, "fps": self.fps, "frames": len(self.rows),
+                "depth_units_m": self.units, "ball": BALL["color"],
+                "ball_radius_m": BALL_RADIUS_M,
+                "intrinsics": {"width": i.width, "height": i.height, "fx": i.fx, "fy": i.fy,
+                               "ppx": i.ppx, "ppy": i.ppy, "model": str(i.model),
+                               "coeffs": list(i.coeffs)},
+                "camera_frame": "RealSense RGB optical: x right, y down, z forward, meters"}
+        with open(os.path.join(self.folder, "meta.json"), "w") as handle:
+            json.dump(meta, handle, indent=2)
+        seen = sum(1 for r in self.rows if r.get("cam_z_m"))
+        print(f"SAVED recording {self.folder}: {len(self.rows)} frames, ball tracked in "
+              f"{seen}", flush=True)
+        self.folder = None
+
+
+class VisionTracker:
+    """The per-frame vision pipeline, without any window: learn the empty scene, find
+    ball candidates and the catch box, and run the lock-on state machine.
+
+    measure() (the on-screen tool) and ball_vision_node.py (ROS) both use this, so
+    they behave the same. Settings come from the command-line `args` (see main()).
+    """
+
+    def __init__(self, rs, cv2, np, intrinsics, args):
+        self.rs, self.cv2, self.np, self.intrinsics, self.args = rs, cv2, np, intrinsics, args
+        self.lock = BallLock()
+        self.lock.box_depth_m = args.box_depth
+        self.box_auto = not args.manual_box
+        self.tape = None if args.no_box_tape else TAPE
+        self.learn_frames = max(1, round(LEARN_SECONDS * args.fps))
+        self.relearn()
+        self.box_info, self.box_seen = None, -math.inf
+        self.mask = self.candidates = self.depth_m = self.found_box = None
+
+    @property
+    def learning(self):
+        return self.background is None
+
+    def relearn(self):
+        """Forget the empty scene (and the lock); learn it again from the next frames."""
+        self.background, self.total, self.learned = None, None, 0
+        self.lock.release()
+
+    def learn(self, image):
+        """Add a frame of the empty scene. Returns True when learning just finished."""
+        frame = image.astype(self.np.float32)
+        self.total = frame if self.total is None else self.total + frame
+        self.learned += 1
+        if self.learned >= self.learn_frames:
+            self.background = self.total / self.learned  # average picture of the empty scene
+            return True
+        return False
+
+    def detect(self, image, aligned, now):
+        """Find ball candidates and (automatically) the catch box in this frame."""
+        cv2, np, args, lock = self.cv2, self.np, self.args, self.lock
+        where = None
+        if BALL["color"] == "orange":
+            # Only orange pixels can be the ball: compare just those with the empty scene.
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            where = cv2.inRange(hsv, (BALL["hue_min"], min(BALL["sat_min"], BALL["loose_sat_min"]),
+                                      min(BALL["value_min"], BALL["loose_value_min"])),
+                                (BALL["hue_max"], 255, 255)) > 0
+        changed = scene_changed(np, image, self.background, args.min_change, cv2, where)
+        self.mask = ball_mask(cv2, np, image, self.background, args.brightness,
+                              args.max_saturation, args.min_change, changed=changed)
+        self.candidates = find_candidates(cv2, np, self.mask)
+        if BALL["color"] == "orange":
+            loose_mask = ball_mask(cv2, np, image, self.background, args.brightness,
+                                   args.max_saturation, args.min_change, loose=True,
+                                   changed=changed)
+            self.candidates = merge_candidates(self.candidates,
+                                               find_candidates(cv2, np, loose_mask))
+        self.depth_m = self.found_box = None
+        if self.box_auto and aligned is not None:
+            self.depth_m = (np.asanyarray(aligned.get_data()).astype(np.float32)
+                            * aligned.get_units())
+            self.found_box = find_catch_box(cv2, np, image, self.depth_m, self.intrinsics.fx,
+                                            lock.box, self.tape)
+            if self.found_box is not None:
+                lock.box, lock.box_front_m, w_m, h_m = self.found_box
+                if args.box_distance is not None:
+                    lock.box_front_m = args.box_distance
+                self.box_info = (f"BOX {100 * w_m:.0f}x{100 * h_m:.0f} cm, "
+                                 f"front {100 * lock.box_front_m:.0f} cm")
+                self.box_seen = now
+            elif now - self.box_seen > BOX_KEEP_SECONDS:
+                lock.box, lock.box_front_m, self.box_info = None, None, None
+
+    def track(self, image, aligned, now):
+        """Advance the lock with this frame's candidates. Returns (found, shown, reason)."""
+        args, lock = self.args, self.lock
+        found, shown, reason = lock.update(self.rs, self.np, aligned, self.intrinsics,
+                                           self.candidates, now, args.max_distance)
+        if found is None and lock.state == "LOCKED" and lock.last is not None:
+            # The locked ball may have blended into the background: look right
+            # where it should be, by color and shape alone.
+            pu, pv = lock.predicted_pixel(now)
+            target = ball_at(self.cv2, self.np, image, pu, pv, args.brightness,
+                             args.max_saturation, lock.last.detection.radius,
+                             scene_mask=self.mask)
+            if target is not None:
+                recovered, _ = locate(self.rs, self.np, aligned, self.intrinsics, target,
+                                      args.max_distance)
+                if recovered is not None and lock.fits(recovered, now):
+                    lock.accept(recovered, now)
+                    found, shown, reason = recovered, target, None
+        return found, shown, reason
 
 
 def measure(rs, cv2, np, pipeline, profile, args):
     align = rs.align(rs.stream.color)
     intrinsics = (profile.get_stream(rs.stream.color)
                   .as_video_stream_profile().get_intrinsics())
-    lock = BallLock()
+    tracker = VisionTracker(rs, cv2, np, intrinsics, args)
+    lock = tracker.lock
     averager = Averager()
-    learn_frames = max(1, round(LEARN_SECONDS * args.fps))
-    learned, total, background = 0, None, None
     shown_position = None   # last locked reading, kept on screen for HOLD_SECONDS
     previous_numbers = (None, None)
     last_print = -math.inf
@@ -1099,11 +1312,8 @@ def measure(rs, cv2, np, pipeline, profile, args):
     clicks = []
     point = next_point_number(args.output)
     started = time.monotonic()
-    lock.box_depth_m = args.box_depth
-    box_auto = not args.manual_box
-    box_info, box_seen = None, -math.inf   # automatic box: (size text), last time found
     pending_box = []   # a newly dragged (manual) box waiting for its depth to be measured
-    if box_auto:
+    if tracker.box_auto:
         print("Catch box: found automatically (black, about 15 x 10 cm"
               + (")" if args.no_box_tape else ", with the BLUE TAPE on it)")
               + ". Press k to draw it by hand instead.", flush=True)
@@ -1119,6 +1329,11 @@ def measure(rs, cv2, np, pipeline, profile, args):
     marking = {"on": False, "start": None, "now": None}
     capture = {"left": 0, "folder": None, "count": 0, "found": 0}
     window_width = round(640 * SCALE)
+    recorder = Recorder(cv2, np, args.record_dir, intrinsics,
+                        profile.get_device().get_info(rs.camera_info.serial_number), args.fps)
+    toggle_record = []
+    rate = {"frames": 0, "skipped": 0, "since": time.monotonic()}
+    last_draw = -math.inf
 
     def start_capture():
         if capture["left"] > 0:
@@ -1134,6 +1349,10 @@ def measure(rs, cv2, np, pipeline, profile, args):
         bx0, by0, bx1, by1 = button_rect(window_width)
         if event == cv2.EVENT_LBUTTONDOWN and bx0 <= x <= bx1 and by0 <= y <= by1:
             start_capture()
+            return
+        rx0, ry0, rx1, ry1 = record_rect(window_width)
+        if event == cv2.EVENT_LBUTTONDOWN and rx0 <= x <= rx1 and ry0 <= y <= ry1:
+            toggle_record.append(True)
             return
         x, y = x / SCALE, y / SCALE
         if marking["on"]:
@@ -1167,53 +1386,40 @@ def measure(rs, cv2, np, pipeline, profile, args):
             numbers = (color.get_frame_number(), depth.get_frame_number())
             if numbers[0] == previous_numbers[0] or numbers[1] == previous_numbers[1]:
                 continue
+            if previous_numbers[0] is not None and numbers[0] > previous_numbers[0] + 1:
+                rate["skipped"] += numbers[0] - previous_numbers[0] - 1
             previous_numbers = numbers
             now = time.monotonic()
             image = np.asanyarray(color.get_data())
+            rate["frames"] += 1
+            if now - rate["since"] >= 5.0:
+                seen = rate["frames"] + rate["skipped"]
+                print(f"RATE: processed {rate['frames'] / (now - rate['since']):.0f} fps of "
+                      f"{seen / (now - rate['since']):.0f} from the camera "
+                      f"({rate['skipped']} frames skipped)", flush=True)
+                rate.update(frames=0, skipped=0, since=now)
 
-            if background is None:
-                frame = image.astype(np.float32)
-                total = frame if total is None else total + frame
-                learned += 1
-                if learned >= learn_frames:
-                    background = total / learned  # average picture of the empty scene
+            if tracker.learning:
+                if tracker.learn(image):
                     print("Empty scene learned. Put the ball in view.", flush=True)
                 clicks.clear()
                 key = draw(cv2, np, image, None, "LEARNING EMPTY SCENE", WHITE,
                            "Keep the ball OUT of view",
-                           [f"{learned}/{learn_frames} frames"], WHITE)
+                           [f"{tracker.learned}/{tracker.learn_frames} frames"], WHITE)
                 if key in (ord("q"), 27):
                     break
                 continue
 
-            changed = scene_changed(np, image, background, args.min_change)
-            mask = ball_mask(cv2, np, image, background, args.brightness,
-                             args.max_saturation, args.min_change, changed=changed)
+            aligned = align.process(frames).get_depth_frame() or None
+            tracker.detect(image, aligned, now)
+            mask, candidates = tracker.mask, tracker.candidates
             if args.show_mask:
                 cv2.imshow("ball mask (white = could be the ball)", mask)
                 if not args.no_box_tape:
                     cv2.imshow("tape mask (white = counted as the box's blue tape)",
                                tape_mask(cv2, np, cv2.cvtColor(image, cv2.COLOR_BGR2HSV), TAPE))
-            aligned = align.process(frames).get_depth_frame() or None
-            candidates = find_candidates(cv2, np, mask)
-            if BALL["color"] == "orange":
-                loose_mask = ball_mask(cv2, np, image, background, args.brightness,
-                                       args.max_saturation, args.min_change, loose=True,
-                                       changed=changed)
-                candidates = merge_candidates(candidates, find_candidates(cv2, np, loose_mask))
-            if box_auto and aligned is not None:
-                depth_m = np.asanyarray(aligned.get_data()).astype(np.float32) * aligned.get_units()
-                found_box = find_catch_box(cv2, np, image, depth_m, intrinsics.fx, lock.box,
-                                           None if args.no_box_tape else TAPE)
-                if found_box is not None:
-                    lock.box, lock.box_front_m, w_m, h_m = found_box
-                    if args.box_distance is not None:
-                        lock.box_front_m = args.box_distance
-                    box_info = (f"BOX {100 * w_m:.0f}x{100 * h_m:.0f} cm, "
-                                f"front {100 * lock.box_front_m:.0f} cm")
-                    box_seen = now
-                elif now - box_seen > BOX_KEEP_SECONDS:
-                    lock.box, lock.box_front_m, box_info = None, None, None
+            if tracker.depth_m is not None:
+                depth_m, found_box = tracker.depth_m, tracker.found_box
                 if capture["left"] > 0:
                     capture["count"] += 1
                     capture["left"] -= 1
@@ -1236,7 +1442,7 @@ def measure(rs, cv2, np, pipeline, profile, args):
                               f"{capture['found']}/{capture['count']} ({capture['folder']})",
                               flush=True)
             if pending_box:
-                box_auto = False   # you drew the box by hand: stop finding it automatically
+                tracker.box_auto = False   # you drew the box by hand: stop finding it automatically
                 lock.box = pending_box.pop()
                 pending_box.clear()
                 front = measure_box_front(np, aligned, lock.box)
@@ -1278,21 +1484,7 @@ def measure(rs, cv2, np, pipeline, profile, args):
                         print(f"Click: found a ball shape but can't measure it ({why}).",
                               flush=True)
             if found is None:
-                found, shown, reason = lock.update(rs, np, aligned, intrinsics, candidates,
-                                                   now, args.max_distance)
-            if found is None and lock.state == "LOCKED" and lock.last is not None:
-                # The locked ball may have blended into the background: look right
-                # where it should be, by color and shape alone.
-                pu, pv = lock.predicted_pixel(now)
-                target = ball_at(cv2, np, image, pu, pv, args.brightness,
-                                 args.max_saturation, lock.last.detection.radius,
-                                 scene_mask=mask)
-                if target is not None:
-                    recovered, _ = locate(rs, np, aligned, intrinsics, target,
-                                          args.max_distance)
-                    if recovered is not None and lock.fits(recovered, now):
-                        lock.accept(recovered, now)
-                        found, shown, reason = recovered, target, None
+                found, shown, reason = tracker.track(image, aligned, now)
 
             if lock.state != previous_state:
                 print(f"--- {lock.state} ---", flush=True)
@@ -1307,6 +1499,14 @@ def measure(rs, cv2, np, pipeline, profile, args):
                               "box_px": "" if lock.box is None else " ".join(map(str, lock.box)),
                               "box_front_cm": "" if lock.box_front_m is None
                               else f"{100 * lock.box_front_m:.0f}"})
+            if toggle_record:
+                toggle_record.clear()
+                if recorder.active:
+                    recorder.stop()
+                else:
+                    recorder.start(now)
+            if recorder.active:
+                recorder.add(now, image, aligned, lock, found, list(lock.events))
             lock.events.clear()
 
             speed = None
@@ -1396,9 +1596,9 @@ def measure(rs, cv2, np, pipeline, profile, args):
                          f"X right+ Y down+ Z out")
             if lock.box is None:
                 lines.append(("catch box not found (black, ~15 x 10 cm)" if args.no_box_tape
-                               else "catch box not found (black + blue tape)") if box_auto else
+                               else "catch box not found (black + blue tape)") if tracker.box_auto else
                              "no box marked: press k, then drag around the catch box")
-            elif box_auto:
+            elif tracker.box_auto:
                 lines.append(f"catch box found automatically, front wall at "
                              f"{100 * lock.box_front_m:.0f} cm")
             elif lock.box_front_m is None:
@@ -1420,15 +1620,19 @@ def measure(rs, cv2, np, pipeline, profile, args):
             if marking["on"] and marking["start"] is not None:
                 (xa, ya), (xb, yb) = marking["start"], marking["now"]
                 box = (min(xa, xb), min(ya, yb), max(xa, xb), max(ya, yb))
+            if now - last_draw < 1 / 31 and args.fps > 30:
+                continue   # at 60 fps every frame is tracked; the window is redrawn ~30/s
+            last_draw = now
             key = draw(cv2, np, image, shown, banner, banner_color, headline, lines, tint,
-                       box=box, box_label=box_info if box_auto else "BOX (drawn)",
+                       box=box, box_label=tracker.box_info if tracker.box_auto else "BOX (drawn)",
                        button_text=(f"SAVING {capture['count']}/{CAPTURE_FRAMES}"
-                                    if capture["left"] > 0 else "CAPTURE 10"))
+                                    if capture["left"] > 0 else "CAPTURE 10"),
+                       record_text=(f"STOP {now - recorder.started:4.1f}s" if recorder.active
+                                    else "RECORD"))
             if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                 break
             if key == ord("b"):
-                background, total, learned = None, None, 0
-                lock.release()
+                tracker.relearn()
                 averager.clear()
                 shown_position = None
                 print("Relearning the empty scene: keep the ball OUT of view...", flush=True)
@@ -1436,6 +1640,8 @@ def measure(rs, cv2, np, pipeline, profile, args):
                 lock.clear_box(now)
             elif key == ord("p"):
                 start_capture()
+            elif key == ord("v"):
+                toggle_record.append(True)
             elif key == ord("k"):
                 marking.update(on=True, start=None, now=None)
                 print("Mark the box: drag a rectangle around the catch box opening.",
@@ -1453,11 +1659,14 @@ def measure(rs, cv2, np, pipeline, profile, args):
                 else:
                     print("Not saved: need LOCKED ON and the ball still for ~1 s.", flush=True)
     finally:
+        if recorder.active:
+            recorder.stop()
         log_handle.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
+def build_parser(description=__doc__):
+    """Command-line options for the tracker (also used by ball_vision_node.py)."""
+    parser = argparse.ArgumentParser(description=description,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--fps", type=int, choices=(30, 60), default=30,
                         help="RGB and depth frame rate (default 30; 60 needs USB 3)")
@@ -1510,12 +1719,18 @@ def main():
                         help=f"Blue tape: lowest brightness (default {TAPE['value_min']})")
     parser.add_argument("--capture-dir", default="box_captures",
                         help="Where the CAPTURE button saves frames (default box_captures)")
+    parser.add_argument("--record-dir", default="recordings",
+                        help="Where the RECORD button saves throws (default recordings)")
     parser.add_argument("--box-file", default="box_region.json",
                         help="Where the marked catch-box area is saved (default box_region.json)")
     parser.add_argument("--log", default="ball_track_log.csv",
                         help="CSV of every locked frame, overwritten each run "
                              "(default ball_track_log.csv)")
-    args = parser.parse_args()
+    return parser
+
+
+def apply_settings(parser, args):
+    """Copy color settings from the options into BALL/TAPE and check the options."""
     TAPE.update(hue_min=args.tape_hue_min, hue_max=args.tape_hue_max,
                 sat_min=args.tape_sat_min, value_min=args.tape_value_min)
     BALL.update(loose_sat_min=args.loose_sat_min, loose_value_min=args.loose_value_min)
@@ -1525,6 +1740,12 @@ def main():
         parser.error("--brightness must be between 0 and 255")
     if not args.max_distance > MIN_DEPTH_M:
         parser.error(f"--max-distance must be more than {MIN_DEPTH_M} m")
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    apply_settings(parser, args)
     if sys.platform.startswith("linux") and not (
         os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     ):
