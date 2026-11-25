@@ -45,6 +45,18 @@ python3 -m catchbox.hardware.mock_inputs --seconds 10
 
 Watch `/catchbox/box_state`, `/catchbox_command_adapter/opening_target` and `/catchbox_command_adapter/joint_target` with `rostopic echo`. The real robot state publisher reads but does not move the robot. The mock publisher supplies fake ball data only; use `--mock-box-state` instead of starting `robot_state` to test the model alone without hardware. The real adapter still initializes FrankaPy even in dry-run mode. For a direct mock target through IK and smoothing, use `python3 -m catchbox.hardware.send_target left --distance 0.03 --execute` with adapter motion disabled. A physical movement test is separate: review the calibration and floor, enable the adapter explicitly, and validate on the station with a controlled small move. The full stack has not yet been tested there.
 
+### Labeled mock throws
+
+With `robot_state`, `adapter`, and `model_node` running, and no other ball publisher, run:
+
+```sh
+python3 -m catchbox.hardware.mock_directions
+```
+
+This publishes one simulated throw each to left (+Y), right (-Y), forward (+X), and back (-X), with landing points 5 cm from the calibrated center. It prints each point, then sends a **simulated**, not detected, in-box flag for one second. Four seconds of no active ball follows; the adapter starts returning toward center after three seconds. This does not guarantee the arm reaches center before the next throw. A moving robot can respond differently from the labels: the learned policy determines the targets. Each predicted landing is checked inside the 20 cm sphere at the fixed opening height. The sphere check applies to landing points, not the robot's physical envelope.
+
+Use `--direction left` (or `right`, `forward`, `back`) to run one example. Use `--distance 0.03` for a 3 cm landing offset. Up/down landing points cannot be represented by the existing fixed-height intercept predictor. Reducing `--distance` does not directly limit robot velocity; the adapter's configured velocity/acceleration limits control that. If motion is enabled these synthetic inputs can move the real robot.
+
 ## Setup
 
 Start the robot and FrankaPy as in Lab 1 (unlock in Desk at 172.16.0.2 from the Control PC, `roscore`, then `start_control_pc.sh`). In every container terminal:
