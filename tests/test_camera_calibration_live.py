@@ -109,3 +109,20 @@ def test_calibration_detector_selects_ball_color(live_tool, ball_color, expected
     cv2.circle(image, (110, 50), 10, (0, 165, 255), -1)
     detections = live_tool.find_still_ball(cv2, image, 170, ball_color)
     assert [(ball.u, ball.v) for ball in detections] == [(expected_x, 50)]
+
+
+@pytest.mark.parametrize(("first_ready", "expected_timeout"), [(False, 6000), (True, 2000)])
+def test_frame_timeout_skips_spot(live_tool, monkeypatch, first_ready, expected_timeout):
+    requested = []
+
+    def wait(timeout_ms):
+        requested.append(timeout_ms)
+        return first_ready and len(requested) == 1, object()
+
+    monkeypatch.setattr(live_tool, "locate", lambda *args: (np.array([0, 0, 1]), None, None))
+    args = SimpleNamespace(average_s=1.0, preview=False, brightness=170, ball_color="orange")
+    pipeline = SimpleNamespace(try_wait_for_frames=wait)
+    point, note = live_tool.average_ball(None, None, pipeline, None, args)
+    assert point is None
+    assert "retry this spot" in note
+    assert requested[-1] == expected_timeout

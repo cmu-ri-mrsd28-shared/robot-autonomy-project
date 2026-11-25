@@ -235,10 +235,13 @@ def draw(cv2, image, ball, text):
 def average_ball(rs, cv2, pipeline, align, args):
     """Average the still ball's camera position over about args.average_s seconds."""
     points, ball, image = [], None, None
+    ready, frames = pipeline.try_wait_for_frames(6000)
+    if not ready:
+        return None, "No RealSense frames in 6 s. Check the camera connection and retry this spot."
+
     frames_seen = 0
     end = time.monotonic() + args.average_s
-    while time.monotonic() < end:
-        frames = pipeline.wait_for_frames(2000)
+    while True:
         frames_seen += 1
         p, b, img = locate(rs, cv2, align, frames, args.brightness, args.ball_color)
         if img is not None:
@@ -248,7 +251,13 @@ def average_ball(rs, cv2, pipeline, align, args):
             ball = b
         if args.preview and image is not None:
             draw(cv2, image, ball, f"averaging... {len(points)}/{frames_seen} frames valid")
-    if frames_seen == 0 or len(points) < 0.6 * frames_seen:
+        if time.monotonic() >= end:
+            break
+        ready, frames = pipeline.try_wait_for_frames(2000)
+        if not ready:
+            return None, "RealSense frames stopped during capture. Check the connection and retry this spot."
+
+    if len(points) < 0.6 * frames_seen:
         return None, f"ball found in only {len(points)}/{frames_seen} frames"
     pts = np.array(points)
     median = np.median(pts, axis=0)
