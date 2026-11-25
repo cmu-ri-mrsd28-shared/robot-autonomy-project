@@ -14,8 +14,10 @@ How it works:
               a 40 mm ball's apparent size is what tells its distance when depth
               is missing, and each frame may change size only gradually.
   5. IN BOX   The black catch box is found automatically every frame (a solid dark
-              blob whose real size, from depth, is about the box's 15 x 10 cm), so it
-              can move with the arm. Each locked ball gets a number (#1, #2, ...). If
+              blob whose real size, from depth, is about the box's 15 x 10 cm, and
+              which carries the dark-blue TAPE STRIPES stuck on the box), so it can move
+              with the arm and other black things are ignored. --no-box-tape drops the
+              tape requirement. Each locked ball gets a number (#1, #2, ...). If
               it disappears at the box - inside
               the outline and within 10 cm of the box's front wall or beyond it - it
               is counted as IN THE BOX and the tracker goes back to searching for the
@@ -38,6 +40,7 @@ Distances are from the camera's COLOR lens to the CENTER of the ball, in cm:
 
 Mouse / keys (click the preview window first):
   click   lock on to the ball you clicked
+  p       capture 10 frames (same as clicking the CAPTURE button) into --capture-dir
   k       draw the catch box by hand instead (drag a rectangle; turns off auto-finding)
   c       the box was emptied: clear the in-box count
   r       release the lock and search again
@@ -79,8 +82,13 @@ JUST_OUT_SECONDS = 0.5       # right after a ball comes out, don't count it goin
 RISING_PX_PER_S = 120        # moving up the picture faster than this = being lifted out
 IN_BOX_GRACE_SECONDS = 0.1   # locked ball unseen this long inside the box area -> IN BOX
 BOX_FRONT_MARGIN_M = 0.04    # "visibly in the box": center at most this much before the front wall
-BOX_NEAR_MARGIN_M = 0.10     # "vanished at the box": within this much of the front wall
-BOX_BACK_MARGIN_M = 0.05     # ...or this much beyond the back wall, and still count
+BOX_NEAR_MARGIN_M = 0.10     # "vanished at the box": not nearer than front wall - this - 5%
+BOX_BACK_MARGIN_M = 0.30     # "visibly in the box": at most this much beyond the back wall
+# Measured: a ball dropped into the box (box ~1.3 m by its width, no depth on black)
+# read 1.6-2.5 m in its last frames: half-hidden by the rim it looks small (= far).
+RECENT_Z_SECONDS = 0.5       # recent ball distances kept for the "in front of box" test
+FALLING_PX_PER_S = 60        # moving down the picture faster than this = falling/dropped
+FALL_REACH_SECONDS = 0.15    # a falling ball may vanish this far ahead of where last seen
 # The printed catch box (assets/armbox-thin-meters.STL on main): cup about 15 x 15 cm,
 # 10 cm tall, opening 13.5 x 13.5 cm, plus a 4.5 cm handle (19.5 cm overall).
 BOX_WIDTH_M = 0.15                  # cup width, used when the box has no depth
@@ -88,6 +96,14 @@ BOX_WIDTH_RANGE_M = (0.09, 0.28)    # seen width allowed, any viewing angle
 BOX_HEIGHT_RANGE_M = (0.05, 0.25)   # seen height allowed
 BOX_DARK_VALUE = 60                 # "black": brightness below this (0-255)
 BOX_KEEP_SECONDS = 1.0              # keep using the last box this long if it isn't found
+# Blue tape stuck on the box. Only a black blob carrying this tape counts as the box.
+# The box's dark navy tape measured RGB ~(12, 58, 112) = HSV hue 104-108, sat 200-244,
+# value 75-130. The lab's blue-green frames are hue ~99, sat ~125: they fail sat_min.
+# The bright blue track on the table and the blue part on another robot are much
+# brighter (value ~190-210): they fail value_max.
+TAPE = {"hue_min": 100, "hue_max": 115, "sat_min": 150, "value_min": 50, "value_max": 165}
+TAPE_MIN_PIXELS = 12      # smallest stripe, pixels (a stripe at 2 m is ~50 x 6 px)
+TAPE_MIN_STRIPES = 2      # stripes needed (the box has 3; allow one to be hidden or merged)
 LOST_SECONDS = 0.7       # locked ball unseen this long -> LOST, search again
 HOLD_SECONDS = 4.0       # keep the last reading on screen this long after losing the ball
 AVERAGE_SECONDS = 1.0
@@ -108,11 +124,18 @@ NEUTRAL_SATURATION = 30   # below this a pixel counts as gray/white whatever its
 WARM_HUE_MAX = 45         # OpenCV hue 0-179: 0-45 red/orange/yellow (cream ball ~20)
 WARM_HUE_MIN_WRAP = 165   # 165-179 is red again; 46-164 (green, cyan, blue) is never ball
 # Ball color settings, filled in from the command line (--ball white|orange).
-BALL = {"color": "white", "hue_min": 6, "hue_max": 25, "sat_min": 235, "value_min": 100}
+BALL = {"color": "white", "hue_min": 6, "hue_max": 25, "sat_min": 235, "value_min": 100,
+        "loose_sat_min": 160, "loose_value_min": 150}
+# The orange ball's colorfulness depends on the lighting and the camera's auto exposure:
+# 240-255 under the warm lights close up, but only ~180-230 at 1-2 m against the white
+# wall. So orange is tested twice: strict (sat >= 235: keeps the ball apart from skin
+# under warm light, where skin reaches ~215) and loose (sat >= 160 and bright, value
+# >= 150: skin measured ~170 sat but only ~100-130 bright). Round blobs from either count.
 CSV_FIELDS = ["point", "time", "source", "cam_x_cm", "cam_y_cm", "cam_z_cm", "distance_cm",
               "spread_mm", "samples", "tape_x_cm", "tape_y_cm", "tape_z_cm"]
 LOG_FIELDS = ["t_s", "state", "ball_id", "x_cm", "y_cm", "z_cm", "distance_cm", "source",
-              "radius_px", "speed_toward_camera_mps", "balls_in_box", "event"]
+              "radius_px", "u_px", "v_px", "box_px", "box_front_cm",
+              "speed_toward_camera_mps", "balls_in_box", "event"]
 
 GREEN, YELLOW, RED, GRAY, WHITE = (70, 240, 80), (0, 210, 255), (60, 60, 255), (150, 150, 150), (255, 255, 255)
 BLUE = (255, 170, 40)
@@ -135,7 +158,29 @@ class Measurement:
     source: str       # "depth" or "size"
 
 
-def ball_mask(cv2, np, image, background, brightness, max_saturation, min_change):
+def scene_changed(np, image, background, min_change):
+    """Pixels that differ from the learned empty scene (True = changed).
+
+    Corrects for the camera's automatic brightness/white-balance adjusting
+    when the ball appears.
+    """
+    frame = image.astype(np.float32)
+    # Global per-channel gain, estimated from every 4th pixel each way (fast, plenty).
+    flat_frame = frame[::4, ::4].reshape(-1, 3)
+    flat_bg = background[::4, ::4].reshape(-1, 3)
+    gain = np.clip(np.median(flat_frame, axis=0)
+                   / np.maximum(np.median(flat_bg, axis=0), 1.0), 0.5, 2.0)
+    # Refine using only pixels that still look like the empty scene, so a
+    # ball filling much of the picture does not skew the correction.
+    same = np.abs(flat_frame - flat_bg * gain).max(axis=1) < min_change
+    if same.mean() > 0.2:
+        gain = np.clip(np.median(flat_frame[same], axis=0)
+                       / np.maximum(np.median(flat_bg[same], axis=0), 1.0), 0.5, 2.0)
+    return np.abs(frame - background * gain).max(axis=2) >= min_change
+
+
+def ball_mask(cv2, np, image, background, brightness, max_saturation, min_change, loose=False,
+              changed=None):
     """Ball-colored pixels that differ from the learned empty scene, with gaps filled.
 
     Indoors a white ball looks light gray or warm cream (hue ~20, some
@@ -150,29 +195,19 @@ def ball_mask(cv2, np, image, background, brightness, max_saturation, min_change
         # measured in the lab), while warm-lit white walls/pipes reach ~150-200 and
         # skin (hands, faces) up to ~215.
         # Hue 6-25 keeps orange and drops pure red (red boxes, the red stick on the arm).
-        mask = cv2.inRange(hsv, (BALL["hue_min"], BALL["sat_min"], BALL["value_min"]),
+        sat_min = BALL["loose_sat_min"] if loose else BALL["sat_min"]
+        value_min = BALL["loose_value_min"] if loose else BALL["value_min"]
+        mask = cv2.inRange(hsv, (BALL["hue_min"], sat_min, value_min),
                            (BALL["hue_max"], 255, 255))
     else:
         hue, sat = hsv[..., 0], hsv[..., 1]
         mask = cv2.inRange(hsv, (0, 0, brightness), (179, max_saturation, 255))
         cool = (sat >= NEUTRAL_SATURATION) & (hue > WARM_HUE_MAX) & (hue < WARM_HUE_MIN_WRAP)
         mask[cool] = 0
-    if background is not None:
-        frame = image.astype(np.float32)
-        # Global per-channel gain: the camera re-exposes when the ball appears.
-        # Estimate the correction from every 4th pixel each way (fast, plenty).
-        flat_frame = frame[::4, ::4].reshape(-1, 3)
-        flat_bg = background[::4, ::4].reshape(-1, 3)
-        gain = np.clip(np.median(flat_frame, axis=0)
-                       / np.maximum(np.median(flat_bg, axis=0), 1.0), 0.5, 2.0)
-        # Refine using only pixels that still look like the empty scene, so a
-        # ball filling much of the picture does not skew the correction.
-        same = np.abs(flat_frame - flat_bg * gain).max(axis=1) < min_change
-        if same.mean() > 0.2:
-            gain = np.clip(np.median(flat_frame[same], axis=0)
-                           / np.maximum(np.median(flat_bg[same], axis=0), 1.0), 0.5, 2.0)
-        change = np.abs(frame - background * gain).max(axis=2)
-        mask[change < min_change] = 0
+    if changed is None and background is not None:
+        changed = scene_changed(np, image, background, min_change)
+    if changed is not None:
+        mask[~changed] = 0
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     # Closing fills the shadowed rim and highlight so the blob is a full disk.
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
@@ -312,6 +347,27 @@ def find_candidates(cv2, np, mask):
     return found
 
 
+def merge_candidates(first, second):
+    """Join two candidate lists; where both found the same ball, keep the bigger circle.
+
+    The strict orange test often catches only the ball's brightest middle (too small
+    a circle = too far by size); the loose test then has the whole ball.
+    """
+    merged = list(first)
+    for c in second:
+        d = c.detection
+        same = [i for i, o in enumerate(merged)
+                if math.hypot(d.u - o.detection.u, d.v - o.detection.v)
+                <= max(d.radius, o.detection.radius)]
+        if not same:
+            merged.append(c)
+        elif all(d.radius > merged[i].detection.radius for i in same):
+            for i in reversed(same):
+                merged.pop(i)
+            merged.append(c)
+    return merged
+
+
 def size_distance_m(fx, radius_px):
     """Distance to the ball center from its apparent radius (pinhole camera)."""
     return fx * BALL_RADIUS_M / radius_px
@@ -386,6 +442,8 @@ def ball_at(cv2, np, image, u, v, brightness, max_saturation, radius_hint=None,
     # First the "changed from the empty scene" mask (cleanest), then color alone.
     masks = [] if scene_mask is None else [scene_mask]
     masks.append(ball_mask(cv2, np, image, None, brightness, max_saturation, 0))
+    if BALL["color"] == "orange":
+        masks.append(ball_mask(cv2, np, image, None, brightness, max_saturation, 0, loose=True))
     for mask in masks:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         for contour in contours:
@@ -458,6 +516,7 @@ class BallLock:
         self.last_time = -math.inf
         self.pixel_velocity = (0.0, 0.0)
         self.history = deque()    # (t, position) while locked, for speed
+        self.recent = deque()     # (t, z, source) of recent sightings, for the box check
         self.lost_at = None
 
     # ----- the catch box -----
@@ -467,22 +526,48 @@ class BallLock:
         u0, v0, u1, v1 = self.box
         return u0 - margin <= u <= u1 + margin and v0 - margin <= v <= v1 + margin
 
-    def _box_distance_ok(self, position, front_margin_m):
+    def _box_distance_ok(self, position, front_margin_m, also=()):
+        """Is the ball at the box's distance? `also`: other distance estimates to try."""
         if self.box_front_m is None:
             return True
-        z = float(position[2])
-        return (self.box_front_m - front_margin_m <= z
-                <= self.box_front_m + self.box_depth_m + BOX_BACK_MARGIN_M)
+        return any(self.box_front_m - front_margin_m <= z
+                   <= self.box_front_m + self.box_depth_m + BOX_BACK_MARGIN_M
+                   for z in (float(position[2]), *also))
 
     def in_box_3d(self, detection, position, margin_px=0.0):
         """Visibly inside the box: inside its outline AND at the box's distance."""
         return (self.in_box(detection.u, detection.v, margin_px)
                 and self._box_distance_ok(position, BOX_FRONT_MARGIN_M))
 
-    def near_box(self, detection, position):
-        """Close enough to the box that vanishing here means it went in."""
-        return (self.in_box(detection.u, detection.v, detection.radius + 10)
-                and self._box_distance_ok(position, BOX_NEAR_MARGIN_M))
+    def near_box(self, detection, position, now=None):
+        """Close enough to the box that vanishing here means it went in.
+
+        A dropped ball falls fast and may vanish just above the box (motion blur),
+        so for a falling ball the spot it was heading for counts too.
+        """
+        margin = detection.radius + 10
+        spots = [(detection.u, detection.v)]
+        if now is not None and self.pixel_velocity[1] > FALLING_PX_PER_S:
+            du, dv = self.pixel_velocity
+            for k in (0.5, 1.0):
+                t = k * FALL_REACH_SECONDS
+                spots.append((detection.u + du * t, detection.v + dv * t))
+        return any(self.in_box(u, v, margin) for u, v in spots) and not self.in_front_of_box(
+            position)
+
+    def in_front_of_box(self, position):
+        """Was the ball clearly nearer the camera than the box (passing in front of it)?
+
+        Only "in front" is ruled out. Vanishing at or behind the box both mean the
+        box now hides it. The distances here are rough: a black box often has no
+        depth (its distance then comes from its width), and a ball half-hidden by
+        the rim looks small (= far). So use the farthest recent reading of the
+        ball, and a margin that grows with distance.
+        """
+        if self.box_front_m is None:
+            return False
+        farthest = max([float(position[2])] + [z for _, z, _ in self.recent])
+        return farthest < self.box_front_m - (BOX_NEAR_MARGIN_M + 0.05 * self.box_front_m)
 
     def watch_area(self):
         """While a ball is in the box: the box (where it is now, else where it was)."""
@@ -566,6 +651,9 @@ class BallLock:
                 self.pixel_velocity = (0.5 * old[0] + 0.5 * new[0], 0.5 * old[1] + 0.5 * new[1])
         self.last, self.last_time = measurement, now
         self.lost_at = None
+        self.recent.append((now, float(measurement.position[2]), measurement.source))
+        while now - self.recent[0][0] > RECENT_Z_SECONDS:
+            self.recent.popleft()
         if self.state == "LOCKED":
             self.history.append((now, measurement.position))
             while now - self.history[0][0] > SPEED_SECONDS:
@@ -674,7 +762,7 @@ class BallLock:
             # Being lifted out (moving up, or just came out): not going in.
             rising = (self.pixel_velocity[1] < -RISING_PX_PER_S
                       or now - self.out_time < JUST_OUT_SECONDS)
-            if (self.near_box(d, self.last.position) and not rising
+            if (self.near_box(d, self.last.position, now) and not rising
                     and missing > IN_BOX_GRACE_SECONDS):
                 # It vanished at the box: it went in. Remember it, look for the next ball.
                 self.in_box_balls.append({"id": self.ball_id, "pixel": (d.u, d.v),
@@ -765,14 +853,109 @@ def save_point(path, number, summary):
         })
 
 
-def find_catch_box(cv2, np, image, depth_m, fx, previous=None):
+def tape_mask(cv2, np, hsv, tape):
+    """Pixels that look like the blue tape on the box (vivid, fairly bright blue)."""
+    mask = cv2.inRange(hsv, (tape["hue_min"], tape["sat_min"], tape["value_min"]),
+                       (tape["hue_max"], 255, tape["value_max"]))
+    return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+
+def box_distance(np, depth_m, region, fx, width_px):
+    """(front_m, z_m) of the box from depth inside `region`, else from its apparent width."""
+    values = depth_m[region]
+    values = values[(values >= MIN_DEPTH_M) & (values <= 6.0)]
+    if values.size >= max(20, 0.15 * np.count_nonzero(region)):
+        middle = float(np.median(values))
+        values = values[np.abs(values - middle) <= 0.25]   # drop stray depth specks
+        return float(np.percentile(values, 10)), middle
+    # Black surfaces often give no depth: the wider the box looks, the closer it is.
+    z = fx * BOX_WIDTH_M / width_px
+    return z, z
+
+
+def count_stripes(np, hsv, box):
+    """How many horizontal tape stripes cross `box` (x, y, w, h).
+
+    Reads the average colorfulness of each row down the middle of the patch:
+    each stripe is a high band, the black gaps between stripes are dips. This
+    still works when the camera blurs the stripes into one blue blob.
+    """
+    x, y, w, h = box
+    if h < 5:
+        return 0
+    rows = hsv[y:y + h, x + w // 5:x + w - w // 5, 1].astype(np.float32).mean(axis=1)
+    rows = np.convolve(rows, np.ones(3) / 3, mode="same")
+    top = rows.max()
+    high, low = 0.88 * top, 0.80 * top
+    bands, inside = 0, False
+    for value in rows:
+        if not inside and value >= high:
+            bands, inside = bands + 1, True
+        elif inside and value <= low:
+            inside = False
+    return bands
+
+
+def find_taped_box(cv2, np, hsv, depth_m, fx, previous, tape):
+    """Find the box from its striped blue tape (e.g. 3 dark-navy stripes on the front).
+
+    Tape-coloured pixels lying close together are joined into one patch; that
+    patch is the box face if it shows at least TAPE_MIN_STRIPES stripes
+    (count_stripes) and its real size (from depth, or from its width when there
+    is no depth) is about the box's. Single blue things - a part on
+    another robot, LEDs, a line of the blue track on the table - don't count.
+    """
+    height, width = hsv.shape[:2]
+    blue = tape_mask(cv2, np, hsv, tape)
+    count, labels, stats, centers = cv2.connectedComponentsWithStats(blue)
+    stripes = [k for k in range(1, count) if stats[k][4] >= TAPE_MIN_PIXELS]
+    if not stripes:
+        return None
+    # Join stripes separated by thin gaps: close vertically and horizontally a bit.
+    keep = np.isin(labels, stripes).astype(np.uint8)
+    joined = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, np.ones((9, 5), np.uint8))
+    n, parts, part_stats, _ = cv2.connectedComponentsWithStats(joined)
+    best, best_score = None, math.inf
+    for part in range(1, n):
+        bx, by, bw, bh, area = part_stats[part]
+        if count_stripes(np, hsv, (bx, by, bw, bh)) < TAPE_MIN_STRIPES:
+            continue
+        if area < 0.5 * bw * bh:
+            continue  # scattered bits, not a solid striped face
+        region = np.zeros(depth_m.shape, bool)
+        region[by:by + bh, bx:bx + bw] = parts[by:by + bh, bx:bx + bw] == part
+        front, z = box_distance(np, depth_m, region, fx, bw)
+        width_m, height_m = bw * z / fx, bh * z / fx
+        if not (BOX_WIDTH_RANGE_M[0] <= width_m <= BOX_WIDTH_RANGE_M[1]
+                and 0.03 <= height_m <= BOX_HEIGHT_RANGE_M[1]):
+            continue
+        # The tape is on the front face; the box opening is just above it.
+        rim = round(0.25 * bh)
+        box = (int(bx), int(max(by - rim, 0)), int(bx + bw - 1), int(by + bh - 1))
+        if previous is not None:
+            score = math.hypot((box[0] + box[2] - previous[0] - previous[2]) / 2,
+                               (box[1] + box[3] - previous[1] - previous[3]) / 2)
+        else:
+            score = -float(area)
+        if score < best_score:
+            best, best_score = (box, front, width_m, height_m), score
+    return best
+
+
+def find_catch_box(cv2, np, image, depth_m, fx, previous=None, tape=None):
     """Find the black catch box: a solid dark blob whose real size matches the box.
+
+    With `tape` (HSV limits), the dark blob must also carry the blue tape, so
+    other black things (a hat, a monitor, a sleeve) are ignored (find_taped_box).
 
     depth_m: aligned depth image in meters (0 = no reading). Returns
     ((u0, v0, u1, v1), front_m, width_m, height_m) or None.
     """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    if tape is not None:
+        return find_taped_box(cv2, np, hsv, depth_m, fx, previous, tape)
     dark = (hsv[..., 2] < BOX_DARK_VALUE).astype(np.uint8) * 255
+    blue = None
     dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -858,8 +1041,18 @@ def measure_box_front(np, depth, box):
     return float(np.percentile(values, 10))
 
 
+CAPTURE_FRAMES = 10
+BUTTON = (230, 52)   # capture button size (w, h), drawn at the top-right of the panel
+
+
+def button_rect(width):
+    """Capture button (x0, y0, x1, y1) in window pixels: top-right of the panel."""
+    top = round(480 * SCALE)
+    return width - BUTTON[0] - 12, top + 10, width - 12, top + 10 + BUTTON[1]
+
+
 def draw(cv2, np, image, ball, banner, banner_color, headline, lines, color, box=None,
-         box_label="BOX"):
+         box_label="BOX", button_text="CAPTURE 10"):
     """Show the video (enlarged) with a state banner and a readable panel underneath."""
     preview = cv2.resize(image, None, fx=SCALE, fy=SCALE)
     if box is not None:
@@ -880,7 +1073,14 @@ def draw(cv2, np, image, ball, banner, banner_color, headline, lines, color, box
     for i, line in enumerate(lines):
         cv2.putText(panel, line, (14, 92 + 34 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.75,
                     WHITE, 2, cv2.LINE_AA)
-    cv2.imshow(WINDOW, np.vstack([preview, panel]))
+    shown = np.vstack([preview, panel])
+    x0, y0, x1, y1 = button_rect(shown.shape[1])
+    busy = button_text != "CAPTURE 10"
+    cv2.rectangle(shown, (x0, y0), (x1, y1), (0, 140, 255) if busy else (90, 90, 90), -1)
+    cv2.rectangle(shown, (x0, y0), (x1, y1), WHITE, 2)
+    cv2.putText(shown, button_text, (x0 + 14, y1 - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.85, WHITE, 2,
+                cv2.LINE_AA)
+    cv2.imshow(WINDOW, shown)
     return cv2.waitKey(1) & 0xFF
 
 
@@ -904,8 +1104,9 @@ def measure(rs, cv2, np, pipeline, profile, args):
     box_info, box_seen = None, -math.inf   # automatic box: (size text), last time found
     pending_box = []   # a newly dragged (manual) box waiting for its depth to be measured
     if box_auto:
-        print("Catch box: found automatically (black, about 15 x 10 cm). "
-              "Press k to draw it by hand instead.", flush=True)
+        print("Catch box: found automatically (black, about 15 x 10 cm"
+              + (")" if args.no_box_tape else ", with the BLUE TAPE on it)")
+              + ". Press k to draw it by hand instead.", flush=True)
     else:
         lock.box, lock.box_front_m = load_box(args.box_file)
         if args.box_distance is not None:
@@ -916,10 +1117,24 @@ def measure(rs, cv2, np, pipeline, profile, args):
             print("No catch box marked yet: press k, then drag a rectangle around the box.",
                   flush=True)
     marking = {"on": False, "start": None, "now": None}
+    capture = {"left": 0, "folder": None, "count": 0, "found": 0}
+    window_width = round(640 * SCALE)
+
+    def start_capture():
+        if capture["left"] > 0:
+            return
+        folder = os.path.join(args.capture_dir, time.strftime("box_%Y%m%d_%H%M%S"))
+        os.makedirs(folder, exist_ok=True)
+        capture.update(left=CAPTURE_FRAMES, folder=folder, count=0, found=0)
+        print(f"Capturing {CAPTURE_FRAMES} frames to {folder}", flush=True)
 
     cv2.namedWindow(WINDOW)
 
     def on_mouse(event, x, y, flags, userdata):
+        bx0, by0, bx1, by1 = button_rect(window_width)
+        if event == cv2.EVENT_LBUTTONDOWN and bx0 <= x <= bx1 and by0 <= y <= by1:
+            start_capture()
+            return
         x, y = x / SCALE, y / SCALE
         if marking["on"]:
             if event == cv2.EVENT_LBUTTONDOWN:
@@ -971,15 +1186,25 @@ def measure(rs, cv2, np, pipeline, profile, args):
                     break
                 continue
 
+            changed = scene_changed(np, image, background, args.min_change)
             mask = ball_mask(cv2, np, image, background, args.brightness,
-                             args.max_saturation, args.min_change)
+                             args.max_saturation, args.min_change, changed=changed)
             if args.show_mask:
                 cv2.imshow("ball mask (white = could be the ball)", mask)
+                if not args.no_box_tape:
+                    cv2.imshow("tape mask (white = counted as the box's blue tape)",
+                               tape_mask(cv2, np, cv2.cvtColor(image, cv2.COLOR_BGR2HSV), TAPE))
             aligned = align.process(frames).get_depth_frame() or None
             candidates = find_candidates(cv2, np, mask)
+            if BALL["color"] == "orange":
+                loose_mask = ball_mask(cv2, np, image, background, args.brightness,
+                                       args.max_saturation, args.min_change, loose=True,
+                                       changed=changed)
+                candidates = merge_candidates(candidates, find_candidates(cv2, np, loose_mask))
             if box_auto and aligned is not None:
                 depth_m = np.asanyarray(aligned.get_data()).astype(np.float32) * aligned.get_units()
-                found_box = find_catch_box(cv2, np, image, depth_m, intrinsics.fx, lock.box)
+                found_box = find_catch_box(cv2, np, image, depth_m, intrinsics.fx, lock.box,
+                                           None if args.no_box_tape else TAPE)
                 if found_box is not None:
                     lock.box, lock.box_front_m, w_m, h_m = found_box
                     if args.box_distance is not None:
@@ -989,6 +1214,27 @@ def measure(rs, cv2, np, pipeline, profile, args):
                     box_seen = now
                 elif now - box_seen > BOX_KEEP_SECONDS:
                     lock.box, lock.box_front_m, box_info = None, None, None
+                if capture["left"] > 0:
+                    capture["count"] += 1
+                    capture["left"] -= 1
+                    capture["found"] += found_box is not None
+                    stem = os.path.join(capture["folder"], f"frame{capture['count']:02d}")
+                    cv2.imwrite(stem + "_color.png", image)
+                    np.save(stem + "_depth.npy", depth_m)
+                    marked = image.copy()
+                    if found_box is not None:
+                        u0, v0, u1, v1 = found_box[0]
+                        cv2.rectangle(marked, (u0, v0), (u1, v1), BLUE, 2)
+                        cv2.putText(marked, f"BOX front {100 * found_box[1]:.0f} cm",
+                                    (u0, max(v0 - 6, 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, BLUE, 1)
+                    else:
+                        cv2.putText(marked, "NO BOX FOUND", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.9, (0, 0, 255), 2)
+                    cv2.imwrite(stem + "_found.png", marked)
+                    if capture["left"] == 0:
+                        print(f"Captured {capture['count']} frames: box found in "
+                              f"{capture['found']}/{capture['count']} ({capture['folder']})",
+                              flush=True)
             if pending_box:
                 box_auto = False   # you drew the box by hand: stop finding it automatically
                 lock.box = pending_box.pop()
@@ -1057,7 +1303,10 @@ def measure(rs, cv2, np, pipeline, profile, args):
                 print(f"*** {text} | ball in box: {'YES' if lock.in_box_balls else 'NO'}",
                       flush=True)
                 log.writerow({"t_s": f"{now - started:.3f}", "state": "EVENT",
-                              "balls_in_box": len(lock.in_box_balls), "event": text})
+                              "balls_in_box": len(lock.in_box_balls), "event": text,
+                              "box_px": "" if lock.box is None else " ".join(map(str, lock.box)),
+                              "box_front_cm": "" if lock.box_front_m is None
+                              else f"{100 * lock.box_front_m:.0f}"})
             lock.events.clear()
 
             speed = None
@@ -1072,6 +1321,10 @@ def measure(rs, cv2, np, pipeline, profile, args):
                     "x_cm": f"{x:.1f}", "y_cm": f"{y:.1f}", "z_cm": f"{z:.1f}",
                     "distance_cm": f"{distance_cm(found.position):.1f}",
                     "source": found.source, "radius_px": f"{found.detection.radius:.1f}",
+                    "u_px": found.detection.u, "v_px": found.detection.v,
+                    "box_px": "" if lock.box is None else " ".join(map(str, lock.box)),
+                    "box_front_cm": "" if lock.box_front_m is None
+                    else f"{100 * lock.box_front_m:.0f}",
                     "speed_toward_camera_mps": "" if speed is None else f"{speed:.3f}",
                 })
             summary = averager.summary(np)
@@ -1142,7 +1395,8 @@ def measure(rs, cv2, np, pipeline, profile, args):
             lines.append(f"Ball in box: {'YES' if in_now else 'NO'}   |   "
                          f"X right+ Y down+ Z out")
             if lock.box is None:
-                lines.append("catch box not found (black, ~15 x 10 cm)" if box_auto else
+                lines.append(("catch box not found (black, ~15 x 10 cm)" if args.no_box_tape
+                               else "catch box not found (black + blue tape)") if box_auto else
                              "no box marked: press k, then drag around the catch box")
             elif box_auto:
                 lines.append(f"catch box found automatically, front wall at "
@@ -1167,7 +1421,9 @@ def measure(rs, cv2, np, pipeline, profile, args):
                 (xa, ya), (xb, yb) = marking["start"], marking["now"]
                 box = (min(xa, xb), min(ya, yb), max(xa, xb), max(ya, yb))
             key = draw(cv2, np, image, shown, banner, banner_color, headline, lines, tint,
-                       box=box, box_label=box_info if box_auto else "BOX (drawn)")
+                       box=box, box_label=box_info if box_auto else "BOX (drawn)",
+                       button_text=(f"SAVING {capture['count']}/{CAPTURE_FRAMES}"
+                                    if capture["left"] > 0 else "CAPTURE 10"))
             if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                 break
             if key == ord("b"):
@@ -1178,6 +1434,8 @@ def measure(rs, cv2, np, pipeline, profile, args):
                 print("Relearning the empty scene: keep the ball OUT of view...", flush=True)
             elif key == ord("c"):
                 lock.clear_box(now)
+            elif key == ord("p"):
+                start_capture()
             elif key == ord("k"):
                 marking.update(on=True, start=None, now=None)
                 print("Mark the box: drag a rectangle around the catch box opening.",
@@ -1214,6 +1472,12 @@ def main():
                              " skin under warm light reaches ~215, the ball ~240-255)")
     parser.add_argument("--value-min", type=int, default=100,
                         help="Orange only: lowest brightness counted as orange (default 100)")
+    parser.add_argument("--loose-sat-min", type=int, default=BALL["loose_sat_min"],
+                        help="Orange only: second, looser colorfulness test for dimmer or "
+                             f"farther balls (default {BALL['loose_sat_min']})")
+    parser.add_argument("--loose-value-min", type=int, default=BALL["loose_value_min"],
+                        help="Orange only: brightness the looser test also needs "
+                             f"(default {BALL['loose_value_min']}; skin is ~100-130)")
     parser.add_argument("--brightness", type=int, default=120,
                         help="Minimum ball-pixel brightness, 0-255 (default 120)")
     parser.add_argument("--max-saturation", type=int, default=130,
@@ -1234,12 +1498,27 @@ def main():
                              "overrides the depth-measured value")
     parser.add_argument("--box-depth", type=float, default=0.15,
                         help="Box depth, front wall to back wall, meters (default 0.15)")
+    parser.add_argument("--no-box-tape", action="store_true",
+                        help="Accept any black box-sized blob as the box (no blue tape needed)")
+    parser.add_argument("--tape-hue-min", type=int, default=TAPE["hue_min"],
+                        help=f"Blue tape: lowest hue, 0-179 (default {TAPE['hue_min']})")
+    parser.add_argument("--tape-hue-max", type=int, default=TAPE["hue_max"],
+                        help=f"Blue tape: highest hue, 0-179 (default {TAPE['hue_max']})")
+    parser.add_argument("--tape-sat-min", type=int, default=TAPE["sat_min"],
+                        help=f"Blue tape: lowest colorfulness (default {TAPE['sat_min']})")
+    parser.add_argument("--tape-value-min", type=int, default=TAPE["value_min"],
+                        help=f"Blue tape: lowest brightness (default {TAPE['value_min']})")
+    parser.add_argument("--capture-dir", default="box_captures",
+                        help="Where the CAPTURE button saves frames (default box_captures)")
     parser.add_argument("--box-file", default="box_region.json",
                         help="Where the marked catch-box area is saved (default box_region.json)")
     parser.add_argument("--log", default="ball_track_log.csv",
                         help="CSV of every locked frame, overwritten each run "
                              "(default ball_track_log.csv)")
     args = parser.parse_args()
+    TAPE.update(hue_min=args.tape_hue_min, hue_max=args.tape_hue_max,
+                sat_min=args.tape_sat_min, value_min=args.tape_value_min)
+    BALL.update(loose_sat_min=args.loose_sat_min, loose_value_min=args.loose_value_min)
     BALL.update(color=args.ball, hue_min=args.hue_min, hue_max=args.hue_max, sat_min=args.sat_min,
                 value_min=args.value_min)
     if not 0 <= args.brightness <= 255:
