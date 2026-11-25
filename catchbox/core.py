@@ -18,9 +18,12 @@ class Config:
     box_height: float = 0.12
     box_mass: float = 0.25
     printed_box: bool = False
+    printed_box_variant: str = "thin"
     retention_seconds: float = 1.0
 
     def validate(self):
+        if self.printed_box_variant not in ("thin", "original"):
+            raise ValueError("Unknown printed box variant")
         for key in ('timestep', 'control_dt', 'duration', 'radius', 'mass',
                     'box_width', 'box_depth', 'box_height', 'box_mass', 'retention_seconds'):
             if not np.isfinite(getattr(self, key)) or getattr(self, key) <= 0:
@@ -106,7 +109,7 @@ def sample_throws(seed, count, kind, opening):
 class BoxMetrics:
     """Evaluated each physics step in the MOVING box frame; full-sphere clearance.
 
-    Entry is a downward center crossing with the sphere clear of all four walls.
+    Entry is a clear downward crossing or the ball becoming fully inside.
     Retention requires a continuous second within the cavity, allowing 1 mm
     lateral/top tolerance for numerical contact jitter. Rim contact is
     independent, so a rim-hit catch and a rim-hit bounce-out remain distinguishable.
@@ -139,6 +142,11 @@ class BoxMetrics:
         inside = (abs(local[0])+c.radius <= c.box_width/2+tolerance and
                   abs(local[1])+c.radius <= c.box_depth/2+tolerance and
                   -c.box_height+c.radius-0.002 <= local[2] <= -c.radius+tolerance)
+        # A ball can graze the rim, then settle fully inside without a clean
+        # center crossing. Count that as entry and start retention normally.
+        if inside and not self.entered:
+            self.entered = True
+            self.entry_time = t
         if self.entered and inside:
             if self.since is None:
                 self.since = t

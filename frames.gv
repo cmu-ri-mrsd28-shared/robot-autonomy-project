@@ -1,0 +1,18 @@
+digraph G {
+"panda_link0" -> "panda_link1"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_link2"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_link3"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_link4"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_link5"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_link6"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_link7"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_link8"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_end_effector"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_hand"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_leftfinger"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+"panda_link0" -> "panda_rightfinger"[label="Broadcaster: /robot_state_publisher_node_1\nAverage rate: 100.200 Hz\nMost recent transform: 1795386032.134 ( 0.006 sec old)\nBuffer length: 4.990 sec\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1795386032.140"[ shape=plaintext ] ;
+ }->"panda_link0";
+}

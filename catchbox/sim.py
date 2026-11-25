@@ -40,23 +40,32 @@ class Simulation:
         mujoco.mju_mat2Quat(quat, rotation.T.ravel())
         if cfg.printed_box and tool=='box':
             grip_initial=d.site_xpos[initial.site('gripper0_grip_site').id].copy()
-            opening_initial=grip_initial+np.array([.105,0,.05])
+            opening_initial=grip_initial+np.array([.0975,0,.08] if cfg.printed_box_variant == "thin" else [.105,0,.05])
             mount_pos=rotation.T@(opening_initial-d.xpos[hand_id])
         else:
             mount_pos = rotation.T @ np.array([0.17, 0, 0.02])
         hand = world.worldbody.find(f'.//body[@name="{hand_name}"]')
         box = ET.SubElement(hand, 'body', name='catch_box', pos=vec(mount_pos), quat=vec(quat))
         if tool == 'box' and cfg.printed_box:
-            mesh_path=Path(__file__).resolve().parent.parent/'assets'/'armBox-inmeters.STL'
+            mesh_name = 'armbox-thin-meters.STL' if cfg.printed_box_variant == 'thin' else 'armBox-inmeters.STL'
+            mesh_path=Path(__file__).resolve().parent.parent/'assets'/mesh_name
             ET.SubElement(world.asset,'mesh',name='printed_box_mesh',file=str(mesh_path))
             ET.SubElement(box,'geom',name='printed_box_visual',type='mesh',mesh='printed_box_mesh',mass='0',contype='0',conaffinity='0',rgba='.18 .65 .7 1',group='1')
-            # STL's non-convex cavity cannot be used as a single MuJoCo mesh collider.
-            # Five rectangular pieces approximate its 120 mm cavity and 90 mm depth.
+            # The non-convex mesh is visual only: MuJoCo convexifies mesh
+            # collisions. Separate boxes preserve the open cavity.
+            thin = cfg.printed_box_variant == 'thin'
+            inner = .0675 if thin else .06
+            wall = .0075 if thin else .015
+            depth = .095 if thin else .09
+            bottom = .005 if thin else .01
+            handle_x, handle_z, handle_half_x, handle_half_z = (
+                (-.0975, -.08, .0225, .02) if thin else (-.105, -.05, .03, .025))
+            outer = inner + wall
             common=dict(type='box',friction=vec(cfg.friction),solref=vec(cfg.solref),solimp=vec(cfg.solimp),condim='4',group='0',rgba='.18 .65 .7 0')
-            ET.SubElement(box,'geom',name='box_bottom',pos='0 0 -.095',size='.075 .075 .005',mass=str(cfg.box_mass*.2),**common)
-            for name,pos,size in [('xp',[.0675,0,-.045],[.0075,.075,.045]),('xm',[-.0675,0,-.045],[.0075,.075,.045]),('yp',[0,.0675,-.045],[.06,.0075,.045]),('ym',[0,-.0675,-.045],[.06,.0075,.045])]:
+            ET.SubElement(box,'geom',name='box_bottom',pos=vec([0,0,-depth-bottom/2]),size=vec([outer,outer,bottom/2]),mass=str(cfg.box_mass*.2),**common)
+            for name,pos,size in [('xp',[inner+wall/2,0,-depth/2],[wall/2,outer,depth/2]),('xm',[-inner-wall/2,0,-depth/2],[wall/2,outer,depth/2]),('yp',[0,inner+wall/2,-depth/2],[inner,wall/2,depth/2]),('ym',[0,-inner-wall/2,-depth/2],[inner,wall/2,depth/2])]:
                 ET.SubElement(box,'geom',name='box_'+name,pos=vec(pos),size=vec(size),mass=str(cfg.box_mass*.16),**common)
-            ET.SubElement(box,'geom',name='handle_mass',type='box',pos='-.105 0 -.05',size='.03 .025 .025',mass=str(cfg.box_mass*.16),contype='0',conaffinity='0',rgba='0 0 0 0',group='0')
+            ET.SubElement(box,'geom',name='handle_mass',type='box',pos=vec([handle_x,0,handle_z]),size=vec([handle_half_x,.025,handle_half_z]),mass=str(cfg.box_mass*.16),contype='0',conaffinity='0',rgba='0 0 0 0',group='0')
             ET.SubElement(box,'site',name='opening',pos='0 0 0',size='.004',rgba='0 1 0 1')
         elif tool == 'box':
             w, dep, h, thick = cfg.box_width/2, cfg.box_depth/2, cfg.box_height, .006

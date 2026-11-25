@@ -36,12 +36,13 @@ def run_task(tool,out,args):
     out.mkdir(parents=True,exist_ok=True)
     if (out/'final_model.zip').exists():raise RuntimeError('Existing completed run: choose a new output folder explicitly')
     printed_box=getattr(args,'printed_box',False)
+    printed_box_variant=getattr(args,'printed_box_variant','thin')
     val_seed=getattr(args,'validation_seed',20261120)
     test_seed=getattr(args,'heldout_seed',20261121)
-    env=gym_env(tool,args.seed,True,args.steps,printed_box=printed_box)
-    validation=CatchCore(tool,seed=val_seed,printed_box=printed_box)
+    env=gym_env(tool,args.seed,True,args.steps,printed_box=printed_box,printed_box_variant=printed_box_variant)
+    validation=CatchCore(tool,seed=val_seed,printed_box=printed_box,printed_box_variant=printed_box_variant)
     val_bank=freeze_bank(validation.sim,val_seed,32,out/'validation-throws.json')
-    evaluation=CatchCore(tool,seed=test_seed,printed_box=printed_box)
+    evaluation=CatchCore(tool,seed=test_seed,printed_box=printed_box,printed_box_variant=printed_box_variant)
     eval_bank=freeze_bank(evaluation.sim,test_seed,args.eval_episodes,out/'heldout-throws.json')
     model=CrossQ('MlpPolicy',env,learning_rate=1e-3,buffer_size=250000,learning_starts=1000,
                  batch_size=256,gamma=.99,train_freq=1,gradient_steps=1,policy_delay=3,
@@ -63,7 +64,7 @@ def run_task(tool,out,args):
     # Adam defaults may include tuples/bools; JSON-friendly with no model tensors.
     (out/'spec.json').write_text(json.dumps(spec,indent=2,default=str))
     print(f'{tool}: {counts}; collecting {args.prior_episodes} scripted prior episodes',flush=True)
-    prior=CatchCore(tool,seed=10001,printed_box=printed_box);prior_count=0;prior_success=0;prior_results=[]
+    prior=CatchCore(tool,seed=10001,printed_box=printed_box,printed_box_variant=printed_box_variant);prior_count=0;prior_success=0;prior_results=[]
     start=time.perf_counter()
     for i in range(args.prior_episodes):
         obs=prior.reset()

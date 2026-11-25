@@ -4,15 +4,16 @@ import mujoco
 from catchbox.core import Throw
 
 WORKSPACE_RADIUS_M = 0.5
+PRINTED_BOX_WORKSPACE_RADIUS_M = 0.2
 
-def in_workspace(position, center):
-    return bool(np.linalg.norm(np.asarray(position) - np.asarray(center)) <= WORKSPACE_RADIUS_M + 1e-12)
+def in_workspace(position, center, radius=WORKSPACE_RADIUS_M):
+    return bool(np.linalg.norm(np.asarray(position) - np.asarray(center)) <= radius + 1e-12)
 
-def clamp_workspace(position, center):
+def clamp_workspace(position, center, radius=WORKSPACE_RADIUS_M):
     center = np.asarray(center, dtype=float)
     delta = np.asarray(position, dtype=float) - center
     distance = np.linalg.norm(delta)
-    return center + delta * min(1.0, WORKSPACE_RADIUS_M / distance) if distance else center.copy()
+    return center + delta * min(1.0, radius / distance) if distance else center.copy()
 
 @dataclass
 class Prediction:
@@ -82,15 +83,16 @@ def varied_throw(rng,origin,level=1.,limits=None):
 def freeze_bank(sim,seed,count,path=None):
     """Reachability-filter before scoring; log every rejection and fixed candidate limits."""
     rng=np.random.default_rng(seed);throws=[];rejections=[]
+    radius=PRINTED_BOX_WORKSPACE_RADIUS_M if sim.cfg.printed_box and sim.cfg.printed_box_variant == "thin" else WORKSPACE_RADIUS_M
     origin=sim.nominal_opening.copy()
     if sim.tool=='paddle':origin[2]+=sim.cfg.radius
     for candidate in range(count*100):
         throw,meta=varied_throw(rng,origin)
         target=np.array(meta['target']);target[2]-=sim.cfg.radius if sim.tool=='paddle' else 0
-        if not in_workspace(meta['target'], sim.nominal_grip):
+        if not in_workspace(meta['target'], sim.nominal_grip, radius):
             rejections.append(dict(candidate=candidate,reason='landing_zone',**meta));continue
         prediction=launch_prediction(sim,throw,origin[2])
-        if not prediction.valid or not in_workspace(prediction.position,sim.nominal_grip):
+        if not prediction.valid or not in_workspace(prediction.position,sim.nominal_grip,radius):
             rejections.append(dict(candidate=candidate,reason='predicted_landing_zone',**meta));continue
         q,error=sim.inverse_kinematics(target)
         move_time=np.max(abs(q-sim.home))*1.875/1.5
@@ -99,7 +101,7 @@ def freeze_bank(sim,seed,count,path=None):
         throws.append(dict(throw=asdict(throw),meta=meta))
         if len(throws)==count:break
     if len(throws)!=count:raise RuntimeError('Could not build bank within rejection budget')
-    result=dict(seed=seed,limits=asdict(LaunchLimits()),workspace_radius_m=WORKSPACE_RADIUS_M,workspace_center=sim.nominal_grip.tolist(),throws=throws,rejections=rejections,
+    result=dict(seed=seed,limits=asdict(LaunchLimits()),workspace_radius_m=radius,workspace_center=sim.nominal_grip.tolist(),throws=throws,rejections=rejections,
                 proposed=count+len(rejections),accepted=count)
     if path:
         import json,hashlib

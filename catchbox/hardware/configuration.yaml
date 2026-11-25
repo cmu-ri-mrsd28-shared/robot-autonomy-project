@@ -1,0 +1,34 @@
+# Set the one-time tool frame and offset on the station. Record the origin with
+# python3 -m catchbox.hardware.calibration --set-origin.
+calibration:
+  # Robot frame corresponding to the tool pose reported by FrankaPy; set on the station.
+  tip_link: "panda_hand_tcp"
+  # XYZ from that tool frame to the box opening center, in meters; measure and enter once.
+  opening_offset_m: [0.07978, -0.00136, 0.04041]
+  # Sphere center XYZ in the robot base frame, in meters; recorded by --set-origin.
+  origin_xyz_m: [0.48659539638260424, 0.010536461494865357, 0.2970724773569217]
+  # Seven starting joint angles in radians; recorded automatically by --set-origin.
+  home_joints_rad: [0.013983789247349436, -0.439660208865364, 0.00737974706135298, -2.497182068061193, 0.0027697606689467877, 2.0605968483289083, 0.7999429896904363]
+  # Lowest allowed box-opening height in the base frame, meters. Set above the table plus box depth.
+  min_opening_z_m: 0.04
+
+# Adapter node (python3 -m catchbox.hardware.adapter), streaming joint targets through FrankaPy.
+adapter:
+  # false: plan and publish what would be sent, without moving the robot.
+  enable_motion: false
+  # Joint targets streamed to FrankaPy per second.
+  rate_hz: 100
+  # Per-joint limits of the streamed commands, rad/s and rad/s^2. Simulation: ~1 / 4 keeps most catches.
+  max_joint_velocity: 1.0
+  max_joint_acceleration: 4.0
+
+# Trained policy's simulation frame (catchbox.hardware.policy_frame). From LimitedPoseCatchCore; do not edit.
+policy:
+  # Box opening at the start of every simulated episode, panda_link0 axes, meters.
+  sim_start_opening_m: [0.5547317061010182, 0.0, 0.17904387158518817]
+  # Simulated workspace sphere the policy's targets were clamped to.
+  sim_workspace_center_m: [0.45723170610101843, 0.0, 0.09904387158518815]
+  sim_workspace_radius_m: 0.2
+  # Action [-1, 1] -> offset from the start: x/y/z scale, and the allowed z offset range.
+  action_scale_m: [0.23, 0.23, 0.13]
+  action_z_range_m: [-0.13, 0.08]

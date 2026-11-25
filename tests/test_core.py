@@ -66,3 +66,14 @@ def test_lobs_have_upward_arc_and_lateral_travel():
         assert 1.6 <= v[2] <= 2.2
         assert v[0] < 0 and t > v[2]/9.81
         assert np.linalg.norm(p[:2]-np.array(throw.position[:2])) > .2
+
+
+def test_rim_contact_followed_by_full_containment_counts_as_catch():
+    m=BoxMetrics(Config(box_width=.135, box_depth=.135, box_height=.095))
+    m.update(0, np.array([.06, 0, .01]))
+    m.update(.1, np.array([.06, 0, -.01]), rim=True, contact=True)
+    assert not m.entered
+    m.update(.2, np.array([.04, 0, -.06]), contact=True)
+    assert m.entered and not m.retained
+    m.update(1.2, np.array([.04, 0, -.06]), contact=True)
+    assert m.retained and m.rim_hit and m.result()['outcome']=='catch'

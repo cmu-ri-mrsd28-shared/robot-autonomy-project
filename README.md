@@ -1,17 +1,28 @@
 # Franka ball-catching simulation
 
-A MuJoCo / robosuite simulation of a Franka catching a table-tennis ball in a 3D-printed box. The gripper holds the box handle; a ballistic predictor and inverse-kinematics controller are augmented by a CrossQ residual policy.
+A MuJoCo / robosuite simulation of a Franka catching a table-tennis ball in a 3D-printed box. The gripper holds the box handle; a CrossQ policy proposes a box-opening position, which is converted to joint targets using inverse kinematics.
 
 **Robot control runs in simulation.** The standalone RealSense tracker reports ball position and velocity in camera coordinates or in the Franka base frame with a supplied calibration.
 
-## Latest model and results
+## Model and results
 
-- `artifacts/original-model/box/final_model.zip`: original CrossQ model trained for 300,000 online transitions; initialized from scratch.
-- `artifacts/original-model/report.html`: offline report; keep `media/` beside it.
-- `artifacts/original-model/box/`: evaluation, held-out throws, validation, training logs, and configuration. Replay buffer is intentionally omitted.
-- On 50 held-out throws, the learned policy retained 36/50; the scripted controller retained 32/50 on the same throws. Both got the ball into the box on the same 36 throws. The 1 mm contact tolerance is described in the report.
+The current model is `artifacts/limited-thin-model/final_model.zip`. It was trained from scratch for 50,000 decisions using the thin box, a 20 ms decision interval, and joint targets for joints 1, 4 and 6. On 50 held-out simulated throws, the ball entered on 50 and remained in the box for one second on 49. On 20 harder throws aimed near opposite sides of the workspace, the corrected metric measured 13 retained catches. These results use exact simulated ball tracking and an ideal rigid grasp.
 
-The source STL is `assets/armbox-original.STL`; `assets/armBox-inmeters.STL` is the transformed, meter-scale mesh used by the simulator. The outer box is 15 × 15 × 10 cm, with about a 12 × 12 cm opening and a handle. The mesh is used for rendering; five rectangular pieces approximate the collision cavity. The gripper holds the handle rigidly without slip, and total box-plus-handle mass is assumed to be 250 g. Ball position, velocity and acceleration are taken directly from the simulator.
+**The 20 cm radius constrains predicted landing points and desired opening targets, not the actual robot or its swept volume.** In the edge test the opening itself went outside the sphere. This is not a hardware safety boundary; a separately validated safety controller and collision checks are required.
+
+The printed source is `assets/armbox-thin.STL`; `assets/armbox-thin-meters.STL` is the transformed rendering mesh. Five boxes approximate its non-convex cavity for collisions. The internal opening is approximately 13.5 × 13.5 cm, with 9.5 cm internal depth. Box and handle mass is assumed to be 250 g; the grasp is rigid and cannot slip.
+
+The earlier 300,000-step seven-output residual model and its original-box results remain in `artifacts/original-model/`. It uses a different observation and box geometry.
+
+### Run a rollout
+
+```sh
+python3 scripts/run_rollout.py                 # MuJoCo viewer, current model
+python3 scripts/run_rollout.py --no-view       # headless
+python3 scripts/run_rollout.py --model original  # earlier model and box
+```
+
+On macOS, the MuJoCo viewer may require `mjpython scripts/run_rollout.py`. `scripts/train_limited_thin_50k.py` starts a new training run and refuses to overwrite an existing run.
 
 ## Install and test
 
@@ -20,9 +31,9 @@ Requires Python 3.11 or 3.12. From this directory:
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[training]'
-python -m pip install pytest pillow
-python -m pytest -q
+python3 -m pip install -e '.[training]'
+python3 -m pip install pytest pillow
+python3 -m pytest -q
 ```
 
 The offline video renderer also requires `ffmpeg` on `PATH`. Lock files record packages from the original environment and may require adaptation for a different platform.
@@ -39,9 +50,9 @@ to a USB 3 port and run these commands from the repository root:
 ```sh
 python3 -m venv ~/.venvs/catchbox-camera
 source ~/.venvs/catchbox-camera/bin/activate
-python -m pip install -r requirements-camera.txt
-python scripts/check_camera.py --seconds 10
-python scripts/check_camera.py --preview
+python3 -m pip install -r requirements-camera.txt
+python3 scripts/check_camera.py --seconds 10
+python3 scripts/check_camera.py --preview
 ```
 
 The script prints the device and active stream profiles, then reports paired
@@ -64,7 +75,7 @@ for supported environments.
 ### Track a white table-tennis ball
 
 ```sh
-python -B scripts/track_ball.py --preview --every-frame --seconds 10
+python3 -B scripts/track_ball.py --preview --every-frame --seconds 10
 ```
 
 The tracker requests 640 × 480 RGB and depth at 60 fps over USB 3. It prints
@@ -148,17 +159,12 @@ stream on this branch.
 
 ## Interface
 
-`catchbox/learning/environment.py` constructs the 60-value normalized observation and applies the model's seven bounded residual corrections. `catchbox/learning/trajectory.py` predicts the ballistic intercept. `catchbox/sim.py` constructs the robot, box and simulation; `catchbox/learning/train.py` contains training and evaluation routines.
+`LimitedPoseCatchCore` receives 25 values in this order: box opening position (3), linear velocity / 3 (3), angular velocity / 3 (3), ball position (3), ball velocity / 5 (3), predicted intercept position (3), predicted intercept velocity / 5 (3), time to intercept (1), and tracking-valid, prediction-valid and currently-in-box flags (3). The complete observation is clipped to [-10, 10]. Positions use the simulation world frame in meters; velocities use meters or radians per second before scaling. Invalid predictions are zeroed. See `PoseCatchCore.observation()` for the exact contract.
 
-The model is an `sb3-contrib` CrossQ checkpoint. For example, load it without starting training:
+The model outputs three normalized values for the desired box-opening position relative to its fixed start. Restricted IK computes targets for joints 1, 4 and 6; joint 6 compensates for joint 4 to keep the box level. A simulation servo tracks those targets at 1 kHz. The decision interval is 20 ms. The hardware controller, safety layer, and camera-to-robot integration have not been implemented.
 
-```python
-from sb3_contrib import CrossQ
-model = CrossQ.load('artifacts/original-model/box/final_model.zip', device='cpu')
-```
+For camera integration, see the [camera implementation guide](docs/CAMERA_IMPLEMENTATION.md). The original model's 60-value residual interface is separate and must not be mixed with the current checkpoint.
 
-The model expects the exact observation order, normalization and controller state constructed in `CatchCore.observation()`. Its output is not a joint command. The hardware adapter must be designed and validated separately.
+## Hardware prototype
 
-`scripts/train_original_model.py` documents the training entry point. **Running it starts a new training run**, writes a new output folder and takes substantial time; it refuses to overwrite existing run artifacts. Do not run it merely to load or evaluate the checkpoint.
-
-
+The [hardware guide](docs/HARDWARE_ROS1.md) covers origin calibration, the FrankaPy motion checks, and the ROS adapter that streams restricted-IK joint targets through FrankaPy. The adapter has not been run on the robot yet; motion is disabled in its configuration. Camera-to-policy integration remains to be implemented.

@@ -38,12 +38,12 @@ def test_new_box_and_deterministic_zero_residual_rollout():
 
 def test_workspace_bounds_and_outside_landing_rejected():
     center=np.array([.6,0.,.4])
-    assert in_workspace(center+np.array([.5,0,0]),center)
-    assert not in_workspace(center+np.array([.51,0,0]),center)
-    np.testing.assert_allclose(clamp_workspace(center+np.array([.6,.8,0]),center),center+np.array([.3,.4,0]))
+    assert in_workspace(center+np.array([.2,0,0]),center,.2)
+    assert not in_workspace(center+np.array([.21,0,0]),center,.2)
+    np.testing.assert_allclose(clamp_workspace(center+np.array([.6,.8,0]),center,.2),center+np.array([.12,.16,0]))
     env=CatchCore('box',seed=0)
     throw,meta=varied_throw(np.random.default_rng(2),env.start_pos+np.array([1.,0,0]))
-    with pytest.raises(ValueError,match='outside the 50 cm workspace'):
+    with pytest.raises(ValueError,match='outside the 0.5 m workspace radius'):
         env.reset(throw,meta)
 
 def test_frozen_throws_land_in_workspace():
@@ -71,8 +71,24 @@ def test_printed_box_has_real_mesh_mass_and_held_handle():
     env=CatchCore('box',seed=0,printed_box=True)
     sim=env.sim
     assert sim.model.body_mass[sim.box_id] == pytest.approx(.25)
-    assert sim.cfg.box_width == pytest.approx(.12)
-    assert sim.cfg.box_height == pytest.approx(.09)
+    assert sim.cfg.box_width == pytest.approx(.135)
+    assert sim.cfg.box_height == pytest.approx(.095)
     assert sim.model.geom('printed_box_visual').id >= 0
-    np.testing.assert_allclose(sim.nominal_opening-sim.nominal_grip,[.105,0,.05],atol=1e-5)
+    np.testing.assert_allclose(sim.nominal_opening-sim.nominal_grip,[.0975,0,.08],atol=1e-5)
     np.testing.assert_allclose(sim.data.qpos[7:9],[.025,-.025],atol=1e-5)
+
+
+def test_thin_box_collision_has_open_cavity_and_floor():
+    import mujoco
+    env = CatchCore('box', seed=0, printed_box=True)
+    sim = env.sim
+    opening = sim.data.site_xpos[sim.site].copy()
+    rotation = sim.data.site_xmat[sim.site].reshape(3, 3).copy()
+    def touches_box(local_z):
+        sim.data.qpos[sim.ball_q:sim.ball_q+3] = opening + rotation @ np.array([0, 0, local_z])
+        mujoco.mj_forward(sim.model, sim.data)
+        return any((c.geom1 == sim.ball_geom and c.geom2 in sim.box_geoms) or
+                   (c.geom2 == sim.ball_geom and c.geom1 in sim.box_geoms)
+                   for c in sim.data.contact[:sim.data.ncon])
+    assert not touches_box(-.03)
+    assert touches_box(-.076)
