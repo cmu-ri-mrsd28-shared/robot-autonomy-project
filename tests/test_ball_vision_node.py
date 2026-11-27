@@ -184,3 +184,52 @@ def test_capture_time_stamp(domain_ok, age, expected_age):
     frame = SimpleNamespace(get_frame_timestamp_domain=lambda: "global" if domain_ok else "hw",
                             get_timestamp=lambda: 1000.0 * (wall - age))
     assert node.capture_time_s(rs, frame, wall) == pytest.approx(wall - expected_age)
+
+
+def test_ball_output_rejects_position_spike_and_restarts_velocity():
+    output = node.BallOutput(np, CALIBRATION)
+    lock = locked_lock()
+    base=np.array([0.5,0.,0.5])
+    for i in range(3):
+        result=output.update(lock,measured(base+np.array([i*.01,0,0])),i/30.,i/30.)
+    assert result['status']==node.TRACKED
+    # A one-frame depth/size mismatch must not be published as a real location.
+    out=output.update(lock,measured(base+[1.,0,0]),.1,.1)
+    assert out['status']==node.HIDDEN and out['in_box']==node.UNKNOWN
+    assert out['position'] is None and out['velocity'] is None
+    assert out['rejection']=='position_jump'
+    # The next plausible point is accepted; velocity must be rebuilt from scratch.
+    out=output.update(lock,measured(base+[.03,0,0]),4/30.,4/30.)
+    assert out['status']==node.VISIBLE and out['velocity'] is None
+    out=output.update(lock,measured(base+[.04,0,0]),5/30.,5/30.)
+    assert out['status']==node.VISIBLE
+    out=output.update(lock,measured(base+[.05,0,0]),6/30.,6/30.)
+    assert out['status']==node.TRACKED
+
+
+def test_fast_plausible_ball_is_not_rejected():
+    output=node.BallOutput(np,CALIBRATION);lock=locked_lock()
+    statuses=[]
+    for i in range(6):
+        out=output.update(lock,measured([.5+3.*i/30.,0,.5]),i/30.,i/30.)
+        statuses.append(out['status'])
+    assert statuses[-1]==node.TRACKED
+    assert all(x!=node.HIDDEN for x in statuses)
+
+
+def test_recorded_depth_size_jump_is_not_published():
+    import csv
+    path=ROOT/'data/videos/throw_20261125_183141/track.csv'
+    if not path.is_file():pytest.skip('optional recorded flight not present')
+    rows=list(csv.DictReader(path.open()))
+    output=node.BallOutput(np,CALIBRATION);lock=locked_lock();lock.ball_id=8
+    results={}
+    for row in rows[52:62]:
+        if not row['cam_x_m']:continue
+        t=float(row['t_s'])
+        found=mb.Measurement(Detection(int(row['ball_u']),int(row['ball_v']),float(row['ball_r_px'])),
+               np.array([float(row['cam_x_m']),float(row['cam_y_m']),float(row['cam_z_m'])]),row['source'])
+        results[int(row['frame'])]=output.update(lock,found,t,t)
+    assert results[58]['position'] is not None
+    assert results[59]['rejection']=='position_jump' and results[59]['position'] is None
+    assert results[60]['position'] is not None and results[60]['velocity'] is None

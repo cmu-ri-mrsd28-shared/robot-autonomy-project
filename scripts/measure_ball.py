@@ -70,6 +70,7 @@ import sys
 import time
 
 from check_camera import camera_session, print_stream_profiles
+from camera_controls import rgb_sensor_settings, color_frame_metadata
 from track_ball import BALL_RADIUS_M, Detection
 
 
@@ -1117,7 +1118,8 @@ def draw(cv2, np, image, ball, banner, banner_color, headline, lines, color, box
 
 RECORD_FIELDS = ["frame", "t_s", "state", "ball_id", "ball_u", "ball_v", "ball_r_px",
                  "cam_x_m", "cam_y_m", "cam_z_m", "source", "box_u0", "box_v0", "box_u1",
-                 "box_v1", "box_front_m", "balls_in_box", "visible_in_box", "event"]
+                 "box_v1", "box_front_m", "balls_in_box", "visible_in_box", "event",
+                 "rgb_exposure_us", "rgb_gain"]
 RECORD_MAX_SECONDS = 60.0
 
 
@@ -1151,7 +1153,7 @@ class Recorder:
         self.rows, self.depth, self.started, self.units = [], [], now, None
         print(f"RECORDING to {self.folder} (click STOP or press v to stop)", flush=True)
 
-    def add(self, now, image, aligned, lock, found, events):
+    def add(self, now, image, aligned, lock, found, events, color_metadata=None):
         np = self.np
         if aligned is not None:
             self.units = aligned.get_units()
@@ -1163,6 +1165,8 @@ class Recorder:
         row = {"frame": len(self.rows), "t_s": f"{now - self.started:.4f}", "state": lock.state,
                "ball_id": lock.ball_id if lock.ball_id is not None else "",
                "balls_in_box": len(lock.in_box_balls), "event": " | ".join(events)}
+        if color_metadata:
+            row.update(color_metadata)
         if found is not None and lock.state == "LOCKED":
             d = found.detection
             row.update(ball_u=d.u, ball_v=d.v, ball_r_px=f"{d.radius:.2f}",
@@ -1506,7 +1510,8 @@ def measure(rs, cv2, np, pipeline, profile, args):
                 else:
                     recorder.start(now)
             if recorder.active:
-                recorder.add(now, image, aligned, lock, found, list(lock.events))
+                recorder.add(now, image, aligned, lock, found, list(lock.events),
+                             color_frame_metadata(rs, color))
             lock.events.clear()
 
             speed = None
@@ -1670,6 +1675,10 @@ def build_parser(description=__doc__):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--fps", type=int, choices=(30, 60), default=30,
                         help="RGB and depth frame rate (default 30; 60 needs USB 3)")
+    parser.add_argument("--rgb-exposure", type=float, default=None,
+                        help="Manual RGB exposure in raw SDK units; default leaves auto setting unchanged")
+    parser.add_argument("--rgb-gain", type=float, default=None,
+                        help="Manual RGB gain in raw SDK units; default unchanged")
     parser.add_argument("--ball", choices=("white", "orange"), default="white",
                         help="Ball color (default white)")
     parser.add_argument("--hue-min", type=int, default=6,
@@ -1763,7 +1772,8 @@ def main():
     try:
         with camera_session(rs, fps=args.fps) as (pipeline, profile):
             print_stream_profiles(rs, profile)
-            measure(rs, cv2, np, pipeline, profile, args)
+            with rgb_sensor_settings(rs, profile, args.rgb_exposure, args.rgb_gain):
+                measure(rs, cv2, np, pipeline, profile, args)
     except KeyboardInterrupt:
         print("\nStopped.")
     except (RuntimeError, cv2.error) as exc:

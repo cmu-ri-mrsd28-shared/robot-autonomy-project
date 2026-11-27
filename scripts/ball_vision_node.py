@@ -49,6 +49,8 @@ GRAVITY = 9.81
 # restarted whenever the ball is not seen.
 VELOCITY_SAMPLES = 5
 MIN_VELOCITY_SAMPLES = 3
+MAX_POSITION_SPEED_M_S = 6.0
+POSITION_JITTER_ALLOWANCE_M = 0.02
 MAX_VELOCITY_GAP_S = 0.1    # a gap longer than this restarts the fit (the sim restarts on any)
 
 
@@ -111,6 +113,8 @@ class BallOutput:
         self.camera_to_base = camera_to_base
         self.velocity = BallisticVelocity(np)
         self.ball_id = None
+        self.last_position = None
+        self.last_capture_s = None
 
     def update(self, lock, found, now, captured_s):
         """Return dict(status, in_box, position, velocity) in the Franka base frame.
@@ -124,7 +128,20 @@ class BallOutput:
             if lock.ball_id != self.ball_id:
                 self.velocity.reset()   # a new ball: don't mix its track with the last
                 self.ball_id = lock.ball_id
+                self.last_position = self.last_capture_s = None
             position = self.camera_to_base.point(self.np.asarray(found.position, float))
+            if self.last_capture_s is not None:
+                dt = captured_s - self.last_capture_s
+                if 0 < dt <= MAX_VELOCITY_GAP_S:
+                    jump = float(self.np.linalg.norm(position - self.last_position))
+                    if jump > MAX_POSITION_SPEED_M_S * dt + POSITION_JITTER_ALLOWANCE_M:
+                        # A single depth/size mismatch must not poison the velocity fit
+                        # or be treated as a confident in-box detection.
+                        self.velocity.reset()
+                        return {"status": HIDDEN, "in_box": UNKNOWN, "position": None,
+                                "velocity": None, "rejection": "position_jump"}
+            self.last_position = position.copy()
+            self.last_capture_s = captured_s
             fitted = self.velocity.update(captured_s, position)
             if fitted is not None and self.np.isfinite(fitted).all():
                 status, velocity = TRACKED, fitted
@@ -203,11 +220,13 @@ def main():
     import pyrealsense2 as rs
     from calibrate_camera import load_calibration
     from check_camera import camera_session, print_stream_profiles
+    from camera_controls import rgb_sensor_settings, color_frame_metadata
 
     rospy.init_node("catchbox_ball_vision")
     topics = CameraTopics(rospy)
 
-    with camera_session(rs, fps=args.fps) as (pipeline, profile):
+    with camera_session(rs, fps=args.fps) as (pipeline, profile), \
+         rgb_sensor_settings(rs, profile, args.rgb_exposure, args.rgb_gain):
         print_stream_profiles(rs, profile)
         serial = profile.get_device().get_info(rs.camera_info.serial_number)
         camera_to_base = load_calibration(args.calibration, serial)
@@ -218,6 +237,7 @@ def main():
         output = BallOutput(np, camera_to_base)
         rospy.loginfo("Learning the empty scene: keep the ball OUT of view...")
         previous_numbers, previous_status = (None, None), None
+        rate_since=time.monotonic();rate_processed=0;rate_skipped=0
         try:
             while not rospy.is_shutdown():
                 frames = pipeline.wait_for_frames(5000)
@@ -227,10 +247,20 @@ def main():
                 numbers = (color.get_frame_number(), depth.get_frame_number())
                 if numbers[0] == previous_numbers[0] or numbers[1] == previous_numbers[1]:
                     continue
+                if previous_numbers[0] is not None and numbers[0] > previous_numbers[0] + 1:
+                    rate_skipped += numbers[0] - previous_numbers[0] - 1
                 previous_numbers = numbers
                 now = time.monotonic()
+                rate_processed += 1
+                if now-rate_since >= 5.:
+                    rospy.loginfo("Vision processed %.1f fps, camera %.1f fps, %d skipped frames",
+                                  rate_processed/(now-rate_since),(rate_processed+rate_skipped)/(now-rate_since),rate_skipped)
+                    rate_since=now;rate_processed=rate_skipped=0
                 captured = capture_time_s(rs, color, time.time())
                 image = np.asanyarray(color.get_data())
+                rgb_meta = color_frame_metadata(rs, color)
+                if rgb_meta:
+                    rospy.loginfo_throttle(5, "RGB frame metadata: %s", rgb_meta)
 
                 if tracker.learning:
                     if tracker.learn(image):
@@ -248,6 +278,8 @@ def main():
 
                 out = output.update(tracker.lock, found, now, captured)
                 topics.publish(out, captured)
+                if out.get("rejection"):
+                    rospy.logwarn_throttle(2, "Ball observation rejected: %s", out["rejection"])
                 if out["status"] != previous_status:
                     rospy.loginfo("tracking status %d, in box %d", out["status"], out["in_box"])
                     previous_status = out["status"]

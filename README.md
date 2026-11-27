@@ -42,6 +42,8 @@ The offline video renderer also requires `ffmpeg` on `PATH`. Lock files record p
 
 ## Camera tracking
 
+For frame-rate and RGB exposure checks, see the [camera capture guide](docs/CAMERA_CAPTURE_TUNING.md).
+
 Use `check_camera.py` to inspect the RealSense streams and `track_ball.py` to track a white table-tennis ball. The [camera implementation guide](docs/CAMERA_IMPLEMENTATION.md) describes the planned calibration and controller integration.
 
 ### RealSense D435 terminal check
