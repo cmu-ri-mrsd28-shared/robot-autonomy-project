@@ -62,7 +62,7 @@ def test_model_node_gates_throw_and_predicted_intercept(monkeypatch):
     monkeypatch.setitem(sys.modules,'std_msgs.msg',N(Int8=object))
     from catchbox.hardware.model_node import ModelNode
     log=N(write=lambda event,**kw:events.append((event,kw)))
-    node=ModelNode(SETTINGS,Actor(),fake,log)
+    node=ModelNode(SETTINGS,Actor(),fake,log,throw_gate=True)
     def message(p,velocity=(0,0,0),t=None):
         point=N(x=p[0],y=p[1],z=p[2]);v=N(x=velocity[0],y=velocity[1],z=velocity[2]);z=N(x=0.,y=0.,z=0.)
         return N(header=N(stamp=Stamp(Time.current if t is None else t),frame_id='panda_link0'),pose=N(pose=N(position=point)),twist=N(twist=N(linear=v,angular=z)))
@@ -95,6 +95,41 @@ def test_model_node_gates_throw_and_predicted_intercept(monkeypatch):
     node.on_flag(N(data=-1));assert not node.step()
     node.on_status(N(data=-1));assert not node.step() and not node.throw_gate.active
     assert any(e=='input_wait' and d['reason']=='predicted_intercept_outside_sphere' for e,d in events)
+
+
+def test_model_node_throw_gate_is_off_by_default(monkeypatch):
+    import sys
+    from types import SimpleNamespace as N
+    class Stamp:
+        def __init__(self,t):self.t=t
+        def to_sec(self):return self.t
+        def is_zero(self):return self.t==0
+        def __sub__(self,other):return Stamp(self.t-other.t)
+    class Time:
+        current=100.
+        @staticmethod
+        def now():return Stamp(Time.current)
+    class PointStamped:
+        def __init__(self):self.header=N(frame_id='',stamp=None);self.point=N(x=0.,y=0.,z=0.)
+    published=[];events=[]
+    fake=N(Time=Time,Publisher=lambda *a,**k:N(publish=lambda x:published.append(x)),Subscriber=lambda *a,**k:None)
+    monkeypatch.setitem(sys.modules,'nav_msgs.msg',N(Odometry=object))
+    monkeypatch.setitem(sys.modules,'geometry_msgs.msg',N(PointStamped=PointStamped))
+    monkeypatch.setitem(sys.modules,'std_msgs.msg',N(Int8=object))
+    from catchbox.hardware.model_node import ModelNode
+    node=ModelNode(SETTINGS,Actor(),fake,N(write=lambda event,**kw:events.append((event,kw))))
+    assert not node.gate_enabled
+    def message(p,velocity=(0,0,0)):
+        point=N(x=p[0],y=p[1],z=p[2]);v=N(x=velocity[0],y=velocity[1],z=velocity[2]);z=N(x=0.,y=0.,z=0.)
+        return N(header=N(stamp=Stamp(Time.current),frame_id='panda_link0'),pose=N(pose=N(position=point)),twist=N(twist=N(linear=v,angular=z)))
+    c=np.array(SETTINGS['calibration']['origin_xyz_m'])
+    # A held ball with an out-of-sphere intercept: the gate would withhold it, the default does not.
+    Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[.5,0,.4],(2.,0,-.6)))
+    node.on_flag(N(data=0));node.on_status(N(data=2))
+    assert node.step() and len(published)==1
+    # A hidden ball of unknown whereabouts still gets a target (the pre-gate behaviour).
+    node.on_status(N(data=0));node.on_flag(N(data=-1));assert node.step()
+    assert not any(e=='throw_accepted' for e,_ in events)
 
 
 def test_steady_observation_hidden_and_visible_states():

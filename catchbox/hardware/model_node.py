@@ -3,6 +3,9 @@
 Camera publishes ball Odometry, in-box Int8 (-1 unknown, 0 outside, 1
 inside/probably inside), and tracking-status Int8 (-1 no active ball, 0 hidden,
 1 visible without velocity, 2 tracked). Status and flag must be continuous.
+
+--throw-gate (off by default) also withholds targets until the camera shows a
+moving ball whose predicted intercept is inside the workspace sphere (ThrowGate).
 """
 import argparse, threading, time
 import numpy as np
@@ -21,13 +24,13 @@ def odom_values(msg):
     return np.array([p.x,p.y,p.z],float),np.array([v.x,v.y,v.z],float),np.array([w.x,w.y,w.z],float)
 
 class ModelNode:
-    def __init__(self, settings, actor, rospy, log):
+    def __init__(self, settings, actor, rospy, log, throw_gate=False):
         from nav_msgs.msg import Odometry
         from geometry_msgs.msg import PointStamped
         from std_msgs.msg import Int8
         self.rospy,self.PointStamped,self.log=rospy,PointStamped,log
         self.frame=PolicyFrame(settings);self.actor=actor;self.lock=threading.Lock()
-        self.throw_gate=ThrowGate();self.origin=np.asarray(settings['calibration']['origin_xyz_m'],dtype=float)
+        self.gate_enabled=bool(throw_gate);self.throw_gate=ThrowGate();self.origin=np.asarray(settings['calibration']['origin_xyz_m'],dtype=float)
         self.ball=None;self.box=None;self.flag=None;self.flag_time=0.;self.status=None;self.status_time=0.;self.wait_reason=None
         self.pub=rospy.Publisher('/catchbox_command_adapter/opening_target',PointStamped,queue_size=1)
         self.subscribers=[rospy.Subscriber('/catchbox/ball_state',Odometry,self.on_ball,queue_size=1),
@@ -71,10 +74,12 @@ class ModelNode:
         if status and ball is None:return self._invalidate_gate('missing_or_invalid_ball')
         if status and (not 0<=mono-ball[4]<=MAX_AGE or not 0<=now-ball[3]<=MAX_AGE):return self._invalidate_gate('stale_ball')
         if status and abs(ball[3]-box[3])>MAX_SKEW:return self._withhold('ball_box_timestamp_skew')
-        # No actor commands until a plausible moving ball has an in-sphere intercept.
-        # A previously accepted throw can continue while the camera reports a
-        # probable catch; an unseen ball of unknown whereabouts is held.
-        if status:
+        # With the gate enabled: no actor commands until a plausible moving ball has
+        # an in-sphere intercept. A previously accepted throw can continue while the
+        # camera reports a probable catch; an unseen ball of unknown whereabouts is held.
+        if not self.gate_enabled:
+            pass
+        elif status:
             if not self.throw_gate.observe(ball[0],ball[3]):
                 self.throw_gate.active=False
                 return self._withhold('ball_tracking_jump')
@@ -120,11 +125,13 @@ def main():
     import rospy,yaml
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--config',default=str(DEFAULT_CONFIG))
     parser.add_argument('--rate',type=float,default=50.);parser.add_argument('--log',default='logs/model.jsonl')
+    parser.add_argument('--throw-gate',action='store_true',help='Only send targets for a moving ball predicted to land inside the workspace (off by default)')
     args=parser.parse_args(rospy.myargv()[1:])
     if not 0<args.rate<=100:raise ValueError('rate must be between 0 and 100 Hz')
     with open(args.config) as f:settings=yaml.safe_load(f)
-    rospy.init_node('catchbox_model');log=EventLog(args.log);node=ModelNode(settings,Actor(STEADY_MOTION_ACTOR),rospy,log);rate=rospy.Rate(args.rate)
+    rospy.init_node('catchbox_model');log=EventLog(args.log);node=ModelNode(settings,Actor(STEADY_MOTION_ACTOR),rospy,log,throw_gate=args.throw_gate);rate=rospy.Rate(args.rate)
     rospy.loginfo('Loaded steady-motion actor: %s',STEADY_MOTION_ACTOR)
+    rospy.loginfo('Throw gate %s',"ENABLED" if args.throw_gate else "disabled (use --throw-gate to enable)");log.write('settings',throw_gate=args.throw_gate)
     try:
         while not rospy.is_shutdown():
             try:

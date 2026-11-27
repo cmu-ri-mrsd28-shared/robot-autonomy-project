@@ -69,7 +69,7 @@ def main():
             if math.dist(box,CENTER)<.011:raise RuntimeError('Returned to center before the 3 second delay')
             wait_for(lambda: observed.sample()[0] is not None and math.dist(observed.sample()[0],CENTER)<.012,12,'return to center',processes)
             print('PASS: held before returning toward center after 3 seconds',flush=True)
-            start('model',[sys.executable,'-m','catchbox.hardware.model_node','--config',CONFIG,'--log',tmp+'/model.jsonl'])
+            start('model',[sys.executable,'-m','catchbox.hardware.model_node','--config',CONFIG,'--log',tmp+'/model.jsonl','--throw-gate'])
             start('mock ball',[sys.executable,'-m','catchbox.hardware.mock_inputs','--config',CONFIG,'--seconds','25','--exercise-occlusion'])
             initial=observed.sample(); initial_targets=initial[2];initial_joints=initial[3];initial_q=initial[1]
             wait_for(lambda:observed.sample()[2]>initial_targets+10 and observed.sample()[3]>initial_joints+10,25,'model and adapter output',processes)
