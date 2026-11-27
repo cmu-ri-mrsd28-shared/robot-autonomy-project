@@ -47,7 +47,7 @@ import csv
 from calibrate_camera import (
     CameraToBase, COORDINATES, SOURCE_FRAME, TARGET_FRAME, fit_transform, load_calibration,
 )
-from track_ball import Detection, estimate_position
+from track_ball import BALL_RADIUS_M, Detection, estimate_position
 
 
 WINDOW = "Camera calibration: still ball"
@@ -93,11 +93,12 @@ def rotation_spread_deg(rotations):
     return worst
 
 
-def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
+def solve(camera_points, ee_poses, ball_offset=None, iterations=200, *, flat_face=None):
     """Fit camera-to-base (R, t) and, if not given, the ball offset in the EE frame.
 
     camera_points: (N, 3) ball centers in the camera frame.
     ee_poses: (N, 4, 4) end-effector poses in the base frame.
+    flat_face: outward EE normal and signed contact-plane distance in meters.
     Model: R @ p_cam + t = R_ee @ offset + p_ee.
     """
     cam = np.asarray(camera_points, float)
@@ -108,50 +109,66 @@ def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
         raise ValueError("Calibration samples must be finite")
     rot = poses[:, :3, :3]
     pos = poses[:, :3, 3]
-    fixed = ball_offset is not None
-
-    if fixed:
+    if ball_offset is not None:
+        if flat_face is not None:
+            raise ValueError("Choose either a measured ball offset or a flat face")
         offset = np.asarray(ball_offset, float)
         if offset.shape != (3,) or not np.isfinite(offset).all():
             raise ValueError("Ball offset must be three finite values in meters")
     else:
-        # A tool offset that maps to the same base displacement at every pose
-        # is indistinguishable from camera translation. Centering removes it.
-        variations = (rot - rot.mean(axis=0)).reshape(-1, 3)
+        origin = np.zeros(3)
+        basis = np.eye(3)
+        if flat_face is not None:
+            face = np.asarray(flat_face, float)
+            if face.shape != (4,) or not np.isfinite(face).all():
+                raise ValueError("Flat face needs a finite normal and signed distance")
+            normal_length = np.linalg.norm(face[:3])
+            if not 0 < normal_length < np.inf:
+                raise ValueError("Flat face normal must be nonzero")
+            normal = face[:3] / normal_length
+            origin = normal * (face[3] + BALL_RADIUS_M)
+            # Fit only the two remaining components along the contact plane.
+            basis = np.linalg.svd(normal[None, :])[2][1:].T
+
+        offset_axes = rot @ basis
+        position_with_origin = pos + rot @ origin
+        # An offset that maps to the same base displacement at every pose
+        # is indistinguishable from camera translation. Centering exposes it.
+        variations = (offset_axes - offset_axes.mean(axis=0)).reshape(-1, basis.shape[1])
         singular_values = np.linalg.svd(variations, compute_uv=False) / np.sqrt(len(rot))
         if singular_values[-1] < MIN_OFFSET_EXCITATION:
             raise ValueError(
                 "Cannot separate the ball offset from camera translation. Collect wrist "
                 "rotations about different axes or supply a measured --ball-offset X Y Z."
             )
-        # Linear first guess: treat the 9 entries of R as free, solve for
-        # R, t and offset together, then snap R to a true rotation.
+
+        # Start with a linear fit treating the nine rotation entries as free.
         rows, rhs = [], []
-        for p, r_ee, p_ee in zip(cam, rot, pos):
-            a = np.zeros((3, 15))
+        for p, axes, center in zip(cam, offset_axes, position_with_origin):
+            a = np.zeros((3, 12 + basis.shape[1]))
             for k in range(3):
                 a[k, 3 * k:3 * k + 3] = p
             a[:, 9:12] = np.eye(3)
-            a[:, 12:15] = -r_ee
+            a[:, 12:] = -axes
             rows.append(a)
-            rhs.append(p_ee)
+            rhs.append(center)
         x = np.linalg.lstsq(np.vstack(rows), np.concatenate(rhs), rcond=None)[0]
-        offset = x[12:15]
+        coordinates = x[12:]
 
-    # Alternate: best camera pose for this offset, then best offset for that pose.
-    for _ in range(iterations):
-        target = np.einsum("nij,j->ni", rot, offset) + pos
-        r, t = kabsch(cam, target)
-        if fixed:
-            break
-        world = cam @ r.T + t
-        new_offset = np.linalg.lstsq(
-            np.vstack(rot), np.concatenate(world - pos), rcond=None
-        )[0]
-        if np.linalg.norm(new_offset - offset) < 1e-9:
-            offset = new_offset
-            break
-        offset = new_offset
+        # Alternate the rigid fit and refinement in the permitted offset directions.
+        offset_matrix = np.vstack(offset_axes)
+        for _ in range(iterations):
+            target = offset_axes @ coordinates + position_with_origin
+            r, t = kabsch(cam, target)
+            world = cam @ r.T + t
+            updated = np.linalg.lstsq(
+                offset_matrix, (world - position_with_origin).reshape(-1), rcond=None
+            )[0]
+            change = np.linalg.norm(updated - coordinates)
+            coordinates = updated
+            if change < 1e-9:
+                break
+        offset = origin + basis @ coordinates
 
     target = np.einsum("nij,j->ni", rot, offset) + pos
     transform = fit_transform(cam, target)
@@ -160,7 +177,7 @@ def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
     return r, t, offset, errors
 
 
-def check_errors(camera_points, ee_poses, ball_offset=None):
+def check_errors(camera_points, ee_poses, ball_offset=None, *, flat_face=None):
     """Leave-one-out error: fit without each spot, then measure that spot.
 
     This checks how the fit generalizes within the recorded pose set.
@@ -171,7 +188,7 @@ def check_errors(camera_points, ee_poses, ball_offset=None):
     for i in range(len(cam)):
         keep = np.arange(len(cam)) != i
         try:
-            r, t, offset, _ = solve(cam[keep], poses[keep], ball_offset)
+            r, t, offset, _ = solve(cam[keep], poses[keep], ball_offset, flat_face=flat_face)
         except ValueError as exc:
             raise ValueError(f"Check with retained spot {i + 1} left out failed. {exc}") from exc
         predicted = poses[i, :3, :3] @ offset + poses[i, :3, 3]
@@ -373,7 +390,7 @@ def report_and_save(samples, serial, args):
     cam = np.array([s["camera_xyz_m"] for s in keep])
     poses = np.array([s["ee_pose_base"] for s in keep])
     offset = args.ball_offset
-    r, t, offset, fit = solve(cam, poses, offset)
+    r, t, offset, fit = solve(cam, poses, offset, flat_face=args.flat_face)
     spread = rotation_spread_deg(poses[:, :3, :3])
     if args.ball_offset is None and spread < MIN_ROTATION_SPREAD_DEG:
         print(f"The wrist only turned {spread:.0f} degrees across spots. Either turn it "
@@ -381,7 +398,7 @@ def report_and_save(samples, serial, args):
               "the ball position on the box and pass --ball-offset X Y Z.")
         return False
 
-    check = check_errors(cam, poses, args.ball_offset)
+    check = check_errors(cam, poses, args.ball_offset, flat_face=args.flat_face)
     base_points = np.einsum("nij,j->ni", poses[:, :3, :3], offset) + poses[:, :3, 3]
 
     print("\nError at each spot:")
@@ -412,9 +429,11 @@ def report_and_save(samples, serial, args):
           f"x={t[0]:+.3f}  y={t[1]:+.3f}  z={t[2]:+.3f} m "
           f"(distance {np.linalg.norm(t):.2f} m from base)")
     print("  Sanity check: does that roughly match where the tripod really is?")
+    offset_method = "given" if args.ball_offset is not None else "solved"
+    if args.flat_face is not None:
+        offset_method = "solved along flat face"
     print(f"Ball offset on the end-effector frame: "
-          f"({offset[0]:+.3f}, {offset[1]:+.3f}, {offset[2]:+.3f}) m"
-          f"{' (given)' if args.ball_offset is not None else ' (solved)'}")
+          f"({offset[0]:+.3f}, {offset[1]:+.3f}, {offset[2]:+.3f}) m ({offset_method})")
 
     # Same keys as calibrate_camera.py, so track_ball.py --calibration loads it.
     transform = CameraToBase(r, t)
@@ -436,6 +455,12 @@ def report_and_save(samples, serial, args):
         "coverage_m": span.tolist(),
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if args.flat_face is not None:
+        result["flat_face_in_ee"] = {
+            "outward_normal": args.flat_face[:3],
+            "contact_plane_distance_m": args.flat_face[3],
+            "ball_radius_m": BALL_RADIUS_M,
+        }
     save_json(args.out, result)
     load_calibration(args.out, serial)  # confirm the tracker will accept the file
 
@@ -563,9 +588,13 @@ def main():
     parser.add_argument("--robot-ip", default="172.16.0.2", help="Robot IP for --robot franky")
     parser.add_argument("--ros-topic", default="/franka_state_controller/franka_states",
                         help="ROS 1 Panda arm-state topic (FrankaState or RobotState)")
-    parser.add_argument("--ball-offset", type=float, nargs=3, metavar=("X", "Y", "Z"),
-                        help="Measured ball center in the end-effector frame (m). "
-                             "If omitted, it is solved from wrist rotations.")
+    mount = parser.add_mutually_exclusive_group()
+    mount.add_argument("--ball-offset", type=float, nargs=3, metavar=("X", "Y", "Z"),
+                       help="Measured ball center in the end-effector frame (m)")
+    mount.add_argument("--flat-face", type=float, nargs=4, metavar=("NX", "NY", "NZ", "D"),
+                       help="Outward normal in the end-effector frame and signed distance "
+                            "D in meters to the ball contact plane, including any tape gap. "
+                            "The ball radius is added along the normal.")
     parser.add_argument("--preview", action="store_true", help="Show the camera view")
     parser.add_argument("--ball-color", choices=("white", "orange"), default="white",
                         help="Color of the calibration ball (default white)")

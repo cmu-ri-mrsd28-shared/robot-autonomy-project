@@ -151,7 +151,13 @@ spread left/right, near/far, and high/low across the catch area. Tilt the wrist
 about different axes at several poses so the solver can separate the ball
 offset from the camera translation. If you know the ball center relative to
 the origin of `O_T_EE`, pass the three signed distances along the EE axes
-as `--ball-offset X Y Z` in meters.
+as `--ball-offset X Y Z` in meters. For a ball taped against a measured flat
+face, use `--flat-face NX NY NZ D`. The first three values are the outward
+normal in the EE axes. `D` is the signed distance from the EE origin to the
+contact plane along that normal, including any tape gap. The solver adds the
+20 mm ball radius outward and fits the two remaining components. For a face at
+EE z = -0.10 m facing along negative EE z, the flag is
+`--flat-face 0 0 -1 0.10`.
 
 Type **`solve`** and review the check RMS and worst error. The check leaves
 each pose out of the fit in turn. Verify additional measured points near
@@ -171,8 +177,8 @@ replaces the previous samples file. For a new setup, use distinct
 | [camera_to_base.json](calibration/camera_to_base.json) | Transform from the RealSense RGB optical frame to the Panda base frame, with camera serial and error statistics. Share this file with the tracking teammate. |
 | [camera_to_base_pairs.csv](calibration/camera_to_base_pairs.csv) | Reconstructed point pairs exported by the live fit for inspection. |
 
-For example, compare a fit that excludes spot 18 while keeping the committed
-calibration available.
+Reproduce the saved fit in a separate file. Add a measured `--flat-face`
+if you have the geometry for the same ball attachment.
 
 ```sh
 python -B scripts/calibrate_camera_live.py \
@@ -182,9 +188,9 @@ python -B scripts/calibrate_camera_live.py \
 
 #### Preview with the saved calibration
 
-The committed lab calibration used 21 poses. Its leave-one-out error was
-**37.6 mm RMS** and **111.2 mm worst**. A trial fit excluding spot 18 gave
-**25.3 mm RMS** and **47.9 mm worst**. Use the committed transform for
+The saved calibration uses 20 of the 21 recorded poses, excluding spot 18.
+Its leave-one-out error is **25.3 mm RMS** and **47.9 mm worst**. The ball
+offset was fitted from the recorded poses. Use the saved transform for
 **tracking previews and logs**. Refit and verify independent points near
 the catch zone before using it to command the Panda.
 

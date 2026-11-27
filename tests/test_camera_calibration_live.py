@@ -126,3 +126,21 @@ def test_frame_timeout_skips_spot(live_tool, monkeypatch, first_ready, expected_
     assert point is None
     assert "retry this spot" in note
     assert requested[-1] == expected_timeout
+
+
+def test_flat_face_resolves_unobservable_offset_component(live_tool, calibration_samples):
+    camera, poses, rotation, translation, offset = calibration_samples(vary_axes=False)
+    normal = np.array([0., 0., -1.])
+    distance = float(normal @ offset) - live_tool.BALL_RADIUS_M
+    flat_face = [*normal, distance]
+    solved_r, solved_t, solved_offset, _ = live_tool.solve(camera, poses, flat_face=flat_face)
+    np.testing.assert_allclose(solved_r, rotation, atol=1e-10)
+    np.testing.assert_allclose(solved_t, translation, atol=1e-10)
+    np.testing.assert_allclose(solved_offset, offset, atol=1e-10)
+    assert live_tool.check_errors(camera, poses, flat_face=flat_face).max() < 1e-9
+
+
+def test_flat_face_requires_a_nonzero_normal(live_tool, calibration_samples):
+    camera, poses, *_ = calibration_samples(vary_axes=True)
+    with pytest.raises(ValueError, match="normal must be nonzero"):
+        live_tool.solve(camera, poses, flat_face=[0, 0, 0, .1])
