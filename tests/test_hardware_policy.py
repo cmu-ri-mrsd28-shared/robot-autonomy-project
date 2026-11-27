@@ -41,8 +41,8 @@ def test_observation_matches_simulator_at_same_state():
     np.testing.assert_allclose(obs,e.observation(),atol=1e-5)
 
 
-def test_model_node_requires_fresh_known_ball_and_robot_state(monkeypatch):
-    import sys,time,types
+def test_model_node_gates_throw_and_predicted_intercept(monkeypatch):
+    import sys,types
     from types import SimpleNamespace as N
     class Stamp:
         def __init__(self,t):self.t=t
@@ -50,28 +50,51 @@ def test_model_node_requires_fresh_known_ball_and_robot_state(monkeypatch):
         def is_zero(self):return self.t==0
         def __sub__(self,other):return Stamp(self.t-other.t)
     class Time:
+        current=100.
         @staticmethod
-        def now():return Stamp(100.)
+        def now():return Stamp(Time.current)
     class PointStamped:
         def __init__(self):self.header=N(frame_id='',stamp=None);self.point=N(x=0.,y=0.,z=0.)
-    published=[]
+    published=[];events=[]
     fake=N(Time=Time,Publisher=lambda *a,**k:N(publish=lambda x:published.append(x)),Subscriber=lambda *a,**k:None)
     monkeypatch.setitem(sys.modules,'nav_msgs.msg',N(Odometry=object))
     monkeypatch.setitem(sys.modules,'geometry_msgs.msg',N(PointStamped=PointStamped))
     monkeypatch.setitem(sys.modules,'std_msgs.msg',N(Int8=object))
     from catchbox.hardware.model_node import ModelNode
-    log=N(write=lambda *a,**k:None)
+    log=N(write=lambda event,**kw:events.append((event,kw)))
     node=ModelNode(SETTINGS,Actor(),fake,log)
-    def message(p,t=100.):
-        point=N(x=p[0],y=p[1],z=p[2]);z=N(x=0.,y=0.,z=0.)
-        return N(header=N(stamp=Stamp(t),frame_id='panda_link0'),pose=N(pose=N(position=point)),twist=N(twist=N(linear=z,angular=z)))
-    c=np.array(SETTINGS['calibration']['origin_xyz_m']);node.on_box(message(c));node.on_ball(message(c+[.1,0,.4]))
-    assert not node.step()  # no explicit in-box state
-    node.on_flag(N(data=0));node.on_status(N(data=2));assert node.step() and len(published)==1
-    node.on_flag(N(data=-1));node.on_status(N(data=0));assert node.step() and len(published)==2
-    node.on_status(N(data=-1));assert not node.step()
-    node.on_status(N(data=2));node.on_flag(N(data=0));node.on_ball(message(c+[.1,0,.4],99.7));assert not node.step()
-    node.on_ball(message(c+[.1,0,.4]));node.flag_time=time.monotonic()-1;assert not node.step()
+    def message(p,velocity=(0,0,0),t=None):
+        point=N(x=p[0],y=p[1],z=p[2]);v=N(x=velocity[0],y=velocity[1],z=velocity[2]);z=N(x=0.,y=0.,z=0.)
+        return N(header=N(stamp=Stamp(Time.current if t is None else t),frame_id='panda_link0'),pose=N(pose=N(position=point)),twist=N(twist=N(linear=v,angular=z)))
+    c=np.array(SETTINGS['calibration']['origin_xyz_m'])
+    node.on_flag(N(data=0));node.on_status(N(data=2))
+    # A held ball, even with the free-fall estimator's downward velocity, cannot start.
+    for _ in range(4):
+        Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[.1,0,.4],(0,0,-.6)));assert not node.step()
+    assert not published
+    # Three moving observations and an in-sphere interception activate the policy.
+    for x in (.115,.14,.165):
+        Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[x,0,.4],(0,0,-1)));node.on_flag(N(data=0));node.on_status(N(data=2));node.step()
+    assert published
+    # An out-of-sphere prediction revokes the throw.
+    Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[.17,0,.4],(2.,0,-1)));assert not node.step()
+    assert any(e=='input_wait' and d['reason']=='predicted_intercept_outside_sphere' for e,d in events)
+    # Resume an in-zone trajectory, then reject a tracking jump.
+    Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[.18,0,.4],(0,0,-1)));assert node.step()
+    Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[1.,0,.4],(0,0,-1)));assert not node.step()
+    Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[.17,0,.4],(2.,0,-1)));assert not node.step()
+    # The jump revoked the throw; a hidden ball cannot reactivate it.
+    node.on_status(N(data=0));node.on_flag(N(data=1));assert not node.step()
+    # Wait for five clean observations after the jump to flush the velocity fit.
+    node.on_flag(N(data=0));node.on_status(N(data=2))
+    for x in (.12,.10,.08,.06,.04):
+        Time.current+=.03;node.on_box(message(c));node.on_ball(message(c+[x,0,.4],(0,0,-1)));node.on_flag(N(data=0));node.on_status(N(data=2));node.step()
+    assert node.throw_gate.active
+    # A known catch may continue; a hidden ball of unknown whereabouts may not.
+    node.on_status(N(data=0));node.on_flag(N(data=1));assert node.step()
+    node.on_flag(N(data=-1));assert not node.step()
+    node.on_status(N(data=-1));assert not node.step() and not node.throw_gate.active
+    assert any(e=='input_wait' and d['reason']=='predicted_intercept_outside_sphere' for e,d in events)
 
 
 def test_steady_observation_hidden_and_visible_states():

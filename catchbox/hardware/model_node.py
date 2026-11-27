@@ -6,9 +6,10 @@ inside/probably inside), and tracking-status Int8 (-1 no active ball, 0 hidden,
 """
 import argparse, threading, time
 import numpy as np
-from catchbox.hardware.calibration import BASE_LINK, DEFAULT_CONFIG
+from catchbox.hardware.calibration import BASE_LINK, DEFAULT_CONFIG, WORKSPACE_RADIUS_M
 from catchbox.hardware.event_log import EventLog
-from catchbox.hardware.observation import build_steady_observation
+from catchbox.hardware.observation import build_steady_observation, interception
+from catchbox.hardware.throw_gate import ThrowGate
 from catchbox.hardware.policy import Actor, STEADY_MOTION_ACTOR
 from catchbox.hardware.policy_frame import PolicyFrame
 
@@ -26,6 +27,7 @@ class ModelNode:
         from std_msgs.msg import Int8
         self.rospy,self.PointStamped,self.log=rospy,PointStamped,log
         self.frame=PolicyFrame(settings);self.actor=actor;self.lock=threading.Lock()
+        self.throw_gate=ThrowGate();self.origin=np.asarray(settings['calibration']['origin_xyz_m'],dtype=float)
         self.ball=None;self.box=None;self.flag=None;self.flag_time=0.;self.status=None;self.status_time=0.;self.wait_reason=None
         self.pub=rospy.Publisher('/catchbox_command_adapter/opening_target',PointStamped,queue_size=1)
         self.subscribers=[rospy.Subscriber('/catchbox/ball_state',Odometry,self.on_ball,queue_size=1),
@@ -52,18 +54,48 @@ class ModelNode:
             self.log.write('input_wait',reason=reason,ros_stamp_s=self.rospy.Time.now().to_sec())
             self.wait_reason=reason
         return False
+    def _invalidate_gate(self, reason):
+        self.throw_gate.reset()
+        return self._withhold(reason)
     def step(self):
         with self.lock:ball,box,flag,flag_time,status,status_time=self.ball,self.box,self.flag,self.flag_time,self.status,self.status_time
         mono=time.monotonic();now=self.rospy.Time.now().to_sec()
-        if box is None:return self._withhold('missing_or_invalid_box')
-        if flag is None:return self._withhold('missing_or_invalid_in_box_flag')
-        if status not in (0,1,2):return self._withhold('no_active_ball_or_invalid_status')
-        if not 0<=mono-box[4]<=MAX_AGE or not 0<=now-box[3]<=MAX_AGE:return self._withhold('stale_box')
-        if not 0<=mono-flag_time<=MAX_AGE:return self._withhold('stale_in_box_flag')
-        if not 0<=mono-status_time<=MAX_AGE:return self._withhold('stale_tracking_status')
-        if status and ball is None:return self._withhold('missing_or_invalid_ball')
-        if status and (not 0<=mono-ball[4]<=MAX_AGE or not 0<=now-ball[3]<=MAX_AGE):return self._withhold('stale_ball')
+        if box is None:return self._invalidate_gate('missing_or_invalid_box')
+        if flag is None:return self._invalidate_gate('missing_or_invalid_in_box_flag')
+        if status not in (0,1,2):
+            self.throw_gate.reset()
+            return self._withhold('no_active_ball_or_invalid_status')
+        if not 0<=mono-box[4]<=MAX_AGE or not 0<=now-box[3]<=MAX_AGE:return self._invalidate_gate('stale_box')
+        if not 0<=mono-flag_time<=MAX_AGE:return self._invalidate_gate('stale_in_box_flag')
+        if not 0<=mono-status_time<=MAX_AGE:return self._invalidate_gate('stale_tracking_status')
+        if status and ball is None:return self._invalidate_gate('missing_or_invalid_ball')
+        if status and (not 0<=mono-ball[4]<=MAX_AGE or not 0<=now-ball[3]<=MAX_AGE):return self._invalidate_gate('stale_ball')
         if status and abs(ball[3]-box[3])>MAX_SKEW:return self._withhold('ball_box_timestamp_skew')
+        # No actor commands until a plausible moving ball has an in-sphere intercept.
+        # A previously accepted throw can continue while the camera reports a
+        # probable catch; an unseen ball of unknown whereabouts is held.
+        if status:
+            if not self.throw_gate.observe(ball[0],ball[3]):
+                self.throw_gate.active=False
+                return self._withhold('ball_tracking_jump')
+            if status != 2:return self._withhold('ball_velocity_unavailable')
+            if self.throw_gate.clean_samples_needed:return self._withhold('waiting_for_clean_tracking')
+            if flag != 1:
+                prediction=interception(ball[0],ball[1],float(self.origin[2]))
+                if prediction is None:
+                    self.throw_gate.active=False
+                    return self._withhold('no_descending_intercept')
+                if np.linalg.norm(prediction[0]-self.origin)>WORKSPACE_RADIUS_M+1e-9:
+                    self.throw_gate.active=False
+                    return self._withhold('predicted_intercept_outside_sphere')
+                if not self.throw_gate.active:
+                    if not self.throw_gate.has_motion():return self._withhold('waiting_for_throw_motion')
+                    self.throw_gate.active=True
+                    self.log.write('throw_accepted',ros_stamp_s=now,intercept_m=prediction[0].tolist())
+            elif not self.throw_gate.active:return self._withhold('waiting_for_active_throw')
+        else:
+            if not self.throw_gate.active:return self._withhold('waiting_for_active_throw')
+            if flag != 1:return self._withhold('hidden_ball_location_unknown')
         started=time.monotonic()
         obs=build_steady_observation(self.frame,box[0],box[1],box[2],ball[0] if status else None,
                                      ball[1] if status else None,status,flag)
