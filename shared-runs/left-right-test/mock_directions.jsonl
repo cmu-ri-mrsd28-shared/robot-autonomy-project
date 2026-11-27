@@ -1,0 +1,12 @@
+{"event": "sequence_start", "wall_time_s": 1795632326.0267851, "monotonic_s": 8612.96353635, "directions": ["left"], "distance_m": 0.05, "rate_hz": 50.0, "ros_stamp_s": 1795632326.0267735}
+{"event": "throw_start", "wall_time_s": 1795632326.0269647, "monotonic_s": 8612.963715764, "direction": "left", "landing_m": [0.48659539638260424, 0.06053646149486536, 0.2970724773569211], "initial_position_m": [0.7365953963826042, 0.06053646149486536, 0.6470724773569216], "initial_velocity_m_s": [-0.3846153846153845, 0.0, 2.6497884615384617], "ros_stamp_s": 1795632326.0269568}
+{"event": "simulated_catch", "wall_time_s": 1795632326.6662405, "monotonic_s": 8613.602991503, "direction": "left", "ros_stamp_s": 1795632326.6662333}
+{"event": "no_active_ball", "wall_time_s": 1795632327.6862407, "monotonic_s": 8614.622991646, "direction": "left", "ros_stamp_s": 1795632327.6862338}
+{"event": "sequence_end", "wall_time_s": 1795632331.6863947, "monotonic_s": 8618.623145741, "ros_stamp_s": 1795632331.6863828}
+{"event": "log_summary", "wall_time_s": 1795632331.6864269, "monotonic_s": 8618.623178196, "dropped": 0}
+{"event": "sequence_start", "wall_time_s": 1795632334.8406315, "monotonic_s": 8621.777383201, "directions": ["right"], "distance_m": 0.05, "rate_hz": 50.0, "ros_stamp_s": 1795632334.840592}
+{"event": "throw_start", "wall_time_s": 1795632334.8408883, "monotonic_s": 8621.777639517, "direction": "right", "landing_m": [0.48659539638260424, -0.03946353850513465, 0.2970724773569211], "initial_position_m": [0.7365953963826042, -0.03946353850513465, 0.6470724773569216], "initial_velocity_m_s": [-0.3846153846153845, 0.0, 2.6497884615384617], "ros_stamp_s": 1795632334.840862}
+{"event": "simulated_catch", "wall_time_s": 1795632335.47983, "monotonic_s": 8622.416580959, "direction": "right", "ros_stamp_s": 1795632335.4798236}
+{"event": "no_active_ball", "wall_time_s": 1795632336.4998398, "monotonic_s": 8623.436590671, "direction": "right", "ros_stamp_s": 1795632336.499832}
+{"event": "sequence_end", "wall_time_s": 1795632340.4999645, "monotonic_s": 8627.436715567, "ros_stamp_s": 1795632340.499947}
+{"event": "log_summary", "wall_time_s": 1795632340.5000105, "monotonic_s": 8627.436761632, "dropped": 0}

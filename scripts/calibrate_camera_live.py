@@ -5,7 +5,7 @@ How it works, in plain words:
   2. Hand-guide the arm to a spot, let it settle, press Enter. The script records
      where the camera sees the ball and the robot's end-effector pose.
   3. Repeat at 10-15 spots spread over the catching area. Also turn the wrist
-     differently between spots; this lets the script work out exactly where the
+     around different axes between spots; this lets the script estimate where the
      ball sits on the box, so you do not have to measure that precisely.
   4. Type "solve". The script prints the error at each spot and saves the result.
 
@@ -17,8 +17,10 @@ A point pair CSV is also saved for calibrate_camera.py to cross-check the fit.
 The ball must be still. This script does not move the robot.
 
 Examples:
-  # Read the robot pose over ROS 1 (franka_ros):
+  # Read the robot pose over ROS 1 (franka_ros or Franka Interface):
   python scripts/calibrate_camera_live.py --robot ros --preview
+  python scripts/calibrate_camera_live.py --robot ros --preview \
+    --ros-topic /robot_state_publisher_node_1/robot_state
   # Read the robot pose with franky (libfranka Python bindings):
   python scripts/calibrate_camera_live.py --robot franky --robot-ip 172.16.0.2 --preview
   # Type or paste the robot pose by hand:
@@ -43,9 +45,9 @@ import csv
 # Ashutosh's calibrate_camera.py defines the JSON format track_ball.py loads.
 # Importing it keeps the two tools writing the same format.
 from calibrate_camera import (
-    CameraToBase, COORDINATES, SOURCE_FRAME, TARGET_FRAME, load_calibration,
+    CameraToBase, COORDINATES, SOURCE_FRAME, TARGET_FRAME, fit_transform, load_calibration,
 )
-from track_ball import Detection, estimate_position
+from track_ball import BALL_RADIUS_M, Detection, estimate_position
 
 
 WINDOW = "Camera calibration: still ball"
@@ -55,6 +57,8 @@ MIN_SAMPLES = 6
 # Turning the wrist at least this much between spots lets the solver find the
 # ball's position on the box. Below it, a measured --ball-offset is required.
 MIN_ROTATION_SPREAD_DEG = 25.0
+# Minimum RMS wrist-induced displacement per meter of tool offset in any direction.
+MIN_OFFSET_EXCITATION = 0.05
 # Spots should cover the catching area; warn if any direction spans less.
 MIN_COVERAGE_M = 0.15
 # Reject a spot if the arm moved more than this while it was being recorded.
@@ -89,83 +93,122 @@ def rotation_spread_deg(rotations):
     return worst
 
 
-def solve(camera_points, ee_poses, ball_offset=None, iterations=200):
+def solve(camera_points, ee_poses, ball_offset=None, iterations=200, *, flat_face=None):
     """Fit camera-to-base (R, t) and, if not given, the ball offset in the EE frame.
 
     camera_points: (N, 3) ball centers in the camera frame.
     ee_poses: (N, 4, 4) end-effector poses in the base frame.
+    flat_face: outward EE normal and signed contact-plane distance in meters.
     Model: R @ p_cam + t = R_ee @ offset + p_ee.
     """
     cam = np.asarray(camera_points, float)
-    rot = np.asarray(ee_poses, float)[:, :3, :3]
-    pos = np.asarray(ee_poses, float)[:, :3, 3]
-    fixed = ball_offset is not None
-
-    if fixed:
+    poses = np.asarray(ee_poses, float)
+    if cam.ndim != 2 or cam.shape[1] != 3 or len(cam) < 3 or poses.shape != (len(cam), 4, 4):
+        raise ValueError("Expected at least three paired camera XYZ and 4x4 Panda poses")
+    if not np.isfinite(cam).all() or not np.isfinite(poses).all():
+        raise ValueError("Calibration samples must be finite")
+    rot = poses[:, :3, :3]
+    pos = poses[:, :3, 3]
+    if ball_offset is not None:
+        if flat_face is not None:
+            raise ValueError("Choose either a measured ball offset or a flat face")
         offset = np.asarray(ball_offset, float)
+        if offset.shape != (3,) or not np.isfinite(offset).all():
+            raise ValueError("Ball offset must be three finite values in meters")
     else:
-        # Linear first guess: treat the 9 entries of R as free, solve for
-        # R, t and offset together, then snap R to a true rotation.
+        origin = np.zeros(3)
+        basis = np.eye(3)
+        if flat_face is not None:
+            face = np.asarray(flat_face, float)
+            if face.shape != (4,) or not np.isfinite(face).all():
+                raise ValueError("Flat face needs a finite normal and signed distance")
+            normal_length = np.linalg.norm(face[:3])
+            if not 0 < normal_length < np.inf:
+                raise ValueError("Flat face normal must be nonzero")
+            normal = face[:3] / normal_length
+            origin = normal * (face[3] + BALL_RADIUS_M)
+            # Fit only the two remaining components along the contact plane.
+            basis = np.linalg.svd(normal[None, :])[2][1:].T
+
+        offset_axes = rot @ basis
+        position_with_origin = pos + rot @ origin
+        # An offset that maps to the same base displacement at every pose
+        # is indistinguishable from camera translation. Centering exposes it.
+        variations = (offset_axes - offset_axes.mean(axis=0)).reshape(-1, basis.shape[1])
+        singular_values = np.linalg.svd(variations, compute_uv=False) / np.sqrt(len(rot))
+        if singular_values[-1] < MIN_OFFSET_EXCITATION:
+            raise ValueError(
+                "Cannot separate the ball offset from camera translation. Collect wrist "
+                "rotations about different axes or supply a measured --ball-offset X Y Z."
+            )
+
+        # Start with a linear fit treating the nine rotation entries as free.
         rows, rhs = [], []
-        for p, r_ee, p_ee in zip(cam, rot, pos):
-            a = np.zeros((3, 15))
+        for p, axes, center in zip(cam, offset_axes, position_with_origin):
+            a = np.zeros((3, 12 + basis.shape[1]))
             for k in range(3):
                 a[k, 3 * k:3 * k + 3] = p
             a[:, 9:12] = np.eye(3)
-            a[:, 12:15] = -r_ee
+            a[:, 12:] = -axes
             rows.append(a)
-            rhs.append(p_ee)
+            rhs.append(center)
         x = np.linalg.lstsq(np.vstack(rows), np.concatenate(rhs), rcond=None)[0]
-        offset = x[12:15]
+        coordinates = x[12:]
 
-    # Alternate: best camera pose for this offset, then best offset for that pose.
-    for _ in range(iterations):
-        target = np.einsum("nij,j->ni", rot, offset) + pos
-        r, t = kabsch(cam, target)
-        if fixed:
-            break
-        world = cam @ r.T + t
-        new_offset = np.linalg.lstsq(
-            np.vstack(rot), np.concatenate(world - pos), rcond=None
-        )[0]
-        if np.linalg.norm(new_offset - offset) < 1e-9:
-            offset = new_offset
-            break
-        offset = new_offset
+        # Alternate the rigid fit and refinement in the permitted offset directions.
+        offset_matrix = np.vstack(offset_axes)
+        for _ in range(iterations):
+            target = offset_axes @ coordinates + position_with_origin
+            r, t = kabsch(cam, target)
+            world = cam @ r.T + t
+            updated = np.linalg.lstsq(
+                offset_matrix, (world - position_with_origin).reshape(-1), rcond=None
+            )[0]
+            change = np.linalg.norm(updated - coordinates)
+            coordinates = updated
+            if change < 1e-9:
+                break
+        offset = origin + basis @ coordinates
 
     target = np.einsum("nij,j->ni", rot, offset) + pos
-    r, t = kabsch(cam, target)
+    transform = fit_transform(cam, target)
+    r, t = transform.rotation, transform.translation
     errors = np.linalg.norm(cam @ r.T + t - target, axis=1)
     return r, t, offset, errors
 
 
-def check_errors(camera_points, ee_poses, ball_offset=None):
+def check_errors(camera_points, ee_poses, ball_offset=None, *, flat_face=None):
     """Leave-one-out error: fit without each spot, then measure that spot.
 
-    This estimates accuracy at places the fit has not seen, which is what
-    matters during a catch. It is always larger than the fit error.
+    This checks how the fit generalizes within the recorded pose set.
     """
     cam = np.asarray(camera_points, float)
     poses = np.asarray(ee_poses, float)
     out = []
     for i in range(len(cam)):
         keep = np.arange(len(cam)) != i
-        r, t, offset, _ = solve(cam[keep], poses[keep], ball_offset)
+        try:
+            r, t, offset, _ = solve(cam[keep], poses[keep], ball_offset, flat_face=flat_face)
+        except ValueError as exc:
+            raise ValueError(f"Check with retained spot {i + 1} left out failed. {exc}") from exc
         predicted = poses[i, :3, :3] @ offset + poses[i, :3, 3]
         out.append(np.linalg.norm(r @ cam[i] + t - predicted))
     return np.array(out)
 
 
 # --------------------------------------------------------------------------
-# Camera: finding a still white ball
+# Camera: finding a still ball
 # --------------------------------------------------------------------------
 
-def find_still_ball(cv2, image, brightness):
-    """Return round white blobs, most circular first. No motion is required."""
+def find_still_ball(cv2, image, brightness, ball_color="white"):
+    """Return round blobs of the selected color, most circular first."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    white = cv2.inRange(hsv, (0, 0, brightness), (179, 75, 255))
-    white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    contours, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if ball_color == "orange":
+        mask = cv2.inRange(hsv, (5, 100, brightness), (27, 255, 255))
+    else:
+        mask = cv2.inRange(hsv, (0, 0, brightness), (179, 75, 255))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     found = []
     for contour in contours:
         (u, v), radius = cv2.minEnclosingCircle(contour)
@@ -179,16 +222,16 @@ def find_still_ball(cv2, image, brightness):
     return [d for _, d in found]
 
 
-def locate(rs, cv2, align, frames, brightness):
+def locate(rs, cv2, align, frames, brightness, ball_color):
     """Ball center in the camera frame for one frame pair, plus the detection."""
     aligned = align.process(frames)
     color, depth = aligned.get_color_frame(), aligned.get_depth_frame()
     if not (color and depth):
         return None, None, None
     image = np.asanyarray(color.get_data())
-    for ball in find_still_ball(cv2, image, brightness):
+    for ball in find_still_ball(cv2, image, brightness, ball_color):
         # estimate_position also checks the blob's size against its depth,
-        # which rejects most white things that are not a 40 mm ball.
+        # which helps reject other objects of the same color.
         position, _ = estimate_position(rs, np, depth, ball)
         if position is not None:
             return position, ball, image
@@ -209,12 +252,15 @@ def draw(cv2, image, ball, text):
 def average_ball(rs, cv2, pipeline, align, args):
     """Average the still ball's camera position over about args.average_s seconds."""
     points, ball, image = [], None, None
+    ready, frames = pipeline.try_wait_for_frames(6000)
+    if not ready:
+        return None, "No RealSense frames in 6 s. Check the camera connection and retry this spot."
+
     frames_seen = 0
     end = time.monotonic() + args.average_s
-    while time.monotonic() < end:
-        frames = pipeline.wait_for_frames(2000)
+    while True:
         frames_seen += 1
-        p, b, img = locate(rs, cv2, align, frames, args.brightness)
+        p, b, img = locate(rs, cv2, align, frames, args.brightness, args.ball_color)
         if img is not None:
             image = img
         if p is not None:
@@ -222,7 +268,13 @@ def average_ball(rs, cv2, pipeline, align, args):
             ball = b
         if args.preview and image is not None:
             draw(cv2, image, ball, f"averaging... {len(points)}/{frames_seen} frames valid")
-    if frames_seen == 0 or len(points) < 0.6 * frames_seen:
+        if time.monotonic() >= end:
+            break
+        ready, frames = pipeline.try_wait_for_frames(2000)
+        if not ready:
+            return None, "RealSense frames stopped during capture. Check the connection and retry this spot."
+
+    if len(points) < 0.6 * frames_seen:
         return None, f"ball found in only {len(points)}/{frames_seen} frames"
     pts = np.array(points)
     median = np.median(pts, axis=0)
@@ -237,7 +289,7 @@ def live_preview(rs, cv2, pipeline, align, args):
     """Keep the preview window updated while waiting for typed input."""
     frames = pipeline.poll_for_frames()
     if frames:
-        p, ball, image = locate(rs, cv2, align, frames, args.brightness)
+        p, ball, image = locate(rs, cv2, align, frames, args.brightness, args.ball_color)
         if image is not None:
             text = ("ball found  XYZ=({:+.3f}, {:+.3f}, {:.3f}) m".format(*p)
                     if p is not None else "ball NOT found")
@@ -259,14 +311,28 @@ def column_major_to_matrix(values):
 
 
 class RosPose:
-    """Read O_T_EE from franka_ros (ROS 1)."""
+    """Read the measured O_T_EE from a ROS 1 arm-state publisher."""
 
     def __init__(self, topic):
-        import rospy
-        from franka_msgs.msg import FrankaState
-        self.rospy, self.msg_type, self.topic = rospy, FrankaState, topic
+        try:
+            import rospy
+            from roslib.message import get_message_class
+        except ImportError as exc:
+            raise RuntimeError("Source the ROS 1 workspace in this Python environment") from exc
+
         rospy.init_node("catchbox_camera_calibration", anonymous=True,
                         disable_signals=True)
+        self.rospy = rospy
+        self.topic = rospy.resolve_name(topic)
+        message_type = dict(rospy.get_published_topics()).get(self.topic)
+        if message_type is None:
+            raise RuntimeError(f"No publisher on {self.topic}. Check the ROS master and --ros-topic.")
+        if message_type not in ("franka_msgs/FrankaState", "franka_interface_msgs/RobotState"):
+            raise RuntimeError(f"{self.topic} publishes {message_type}, expected Panda arm state")
+        self.msg_type = get_message_class(message_type)
+        if self.msg_type is None:
+            package = message_type.split("/")[0]
+            raise RuntimeError(f"Cannot import {message_type}. Source the workspace with {package}.")
 
     def read(self):
         msg = self.rospy.wait_for_message(self.topic, self.msg_type, timeout=2.0)
@@ -323,21 +389,21 @@ def report_and_save(samples, serial, args):
         return False
     cam = np.array([s["camera_xyz_m"] for s in keep])
     poses = np.array([s["ee_pose_base"] for s in keep])
-    spread = rotation_spread_deg(poses[:, :3, :3])
     offset = args.ball_offset
-    if offset is None and spread < MIN_ROTATION_SPREAD_DEG:
+    r, t, offset, fit = solve(cam, poses, offset, flat_face=args.flat_face)
+    spread = rotation_spread_deg(poses[:, :3, :3])
+    if args.ball_offset is None and spread < MIN_ROTATION_SPREAD_DEG:
         print(f"The wrist only turned {spread:.0f} degrees across spots. Either turn it "
               f"more (at least {MIN_ROTATION_SPREAD_DEG:.0f}) between spots, or measure "
               "the ball position on the box and pass --ball-offset X Y Z.")
         return False
 
-    r, t, offset, fit = solve(cam, poses, offset)
-    check = check_errors(cam, poses, args.ball_offset)
+    check = check_errors(cam, poses, args.ball_offset, flat_face=args.flat_face)
     base_points = np.einsum("nij,j->ni", poses[:, :3, :3], offset) + poses[:, :3, 3]
 
     print("\nError at each spot:")
     print("  fit   = how well this spot agrees with the calibration")
-    print("  check = error when this spot is left out and predicted (real-world accuracy)")
+    print("  check = error when this spot is left out and predicted")
     bad = np.median(check) * 2.5
     for i, f, c in zip(numbered, fit, check):
         flag = f"   <-- bad spot? add --drop {i}" if c > bad and c > 0.01 else ""
@@ -363,9 +429,11 @@ def report_and_save(samples, serial, args):
           f"x={t[0]:+.3f}  y={t[1]:+.3f}  z={t[2]:+.3f} m "
           f"(distance {np.linalg.norm(t):.2f} m from base)")
     print("  Sanity check: does that roughly match where the tripod really is?")
+    offset_method = "given" if args.ball_offset is not None else "solved"
+    if args.flat_face is not None:
+        offset_method = "solved along flat face"
     print(f"Ball offset on the end-effector frame: "
-          f"({offset[0]:+.3f}, {offset[1]:+.3f}, {offset[2]:+.3f}) m"
-          f"{' (given)' if args.ball_offset is not None else ' (solved)'}")
+          f"({offset[0]:+.3f}, {offset[1]:+.3f}, {offset[2]:+.3f}) m ({offset_method})")
 
     # Same keys as calibrate_camera.py, so track_ball.py --calibration loads it.
     transform = CameraToBase(r, t)
@@ -387,6 +455,12 @@ def report_and_save(samples, serial, args):
         "coverage_m": span.tolist(),
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if args.flat_face is not None:
+        result["flat_face_in_ee"] = {
+            "outward_normal": args.flat_face[:3],
+            "contact_plane_distance_m": args.flat_face[3],
+            "ball_radius_m": BALL_RADIUS_M,
+        }
     save_json(args.out, result)
     load_calibration(args.out, serial)  # confirm the tracker will accept the file
 
@@ -413,14 +487,16 @@ def report_and_save(samples, serial, args):
 def wait_for_line(rs, cv2, pipeline, align, args, prompt):
     """input() that keeps the preview window alive on Linux."""
     print(prompt, end="", flush=True)
-    if not args.preview:
-        return sys.stdin.readline().strip()
-    import select
-    while True:
-        live_preview(rs, cv2, pipeline, align, args)
-        ready, _, _ = select.select([sys.stdin], [], [], 0.03)
-        if ready:
-            return sys.stdin.readline().strip()
+    if args.preview:
+        import select
+
+        while True:
+            live_preview(rs, cv2, pipeline, align, args)
+            ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+            if ready:
+                break
+    line = sys.stdin.readline()
+    return line.strip() if line else "quit"
 
 
 def collect(args):
@@ -432,7 +508,7 @@ def collect(args):
              "franky": lambda: FrankyPose(args.robot_ip),
              "manual": ManualPose}[args.robot]()
 
-    with camera_session(rs, fps=30) as (pipeline, profile):
+    with camera_session(rs, fps=args.fps) as (pipeline, profile):
         print_stream_profiles(rs, profile)
         serial = profile.get_device().get_info(rs.camera_info.serial_number)
         samples = []
@@ -458,6 +534,7 @@ def collect(args):
             if cmd == "undo":
                 if samples:
                     samples.pop()
+                    save_json(args.samples, {"camera_serial": serial, "samples": samples})
                     print("  removed last spot")
                 continue
             if cmd == "solve":
@@ -510,13 +587,21 @@ def main():
                         help="How to read the robot pose (default manual)")
     parser.add_argument("--robot-ip", default="172.16.0.2", help="Robot IP for --robot franky")
     parser.add_argument("--ros-topic", default="/franka_state_controller/franka_states",
-                        help="franka_msgs/FrankaState topic for --robot ros")
-    parser.add_argument("--ball-offset", type=float, nargs=3, metavar=("X", "Y", "Z"),
-                        help="Measured ball center in the end-effector frame (m). "
-                             "If omitted, it is solved from wrist rotations.")
+                        help="ROS 1 Panda arm-state topic (FrankaState or RobotState)")
+    mount = parser.add_mutually_exclusive_group()
+    mount.add_argument("--ball-offset", type=float, nargs=3, metavar=("X", "Y", "Z"),
+                       help="Measured ball center in the end-effector frame (m)")
+    mount.add_argument("--flat-face", type=float, nargs=4, metavar=("NX", "NY", "NZ", "D"),
+                       help="Outward normal in the end-effector frame and signed distance "
+                            "D in meters to the ball contact plane, including any tape gap. "
+                            "The ball radius is added along the normal.")
     parser.add_argument("--preview", action="store_true", help="Show the camera view")
+    parser.add_argument("--ball-color", choices=("white", "orange"), default="white",
+                        help="Color of the calibration ball (default white)")
     parser.add_argument("--brightness", type=int, default=170,
-                        help="Minimum white-pixel brightness (0-255, default 170)")
+                        help="Minimum ball-pixel brightness (0-255, default 170)")
+    parser.add_argument("--fps", type=int, choices=(15, 30), default=30,
+                        help="RGB and depth frame rate (default 30)")
     parser.add_argument("--average-s", type=float, default=1.0,
                         help="Seconds of frames averaged per spot (default 1)")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="Result JSON path")
@@ -529,12 +614,14 @@ def main():
     parser.add_argument("--drop", type=int, nargs="+", metavar="N",
                         help="Spot numbers to leave out when solving")
     args = parser.parse_args()
+    if not 0 <= args.brightness <= 255:
+        parser.error("--brightness must be between 0 and 255")
 
     if args.refit:
-        saved = json.loads(args.refit.read_text())
         try:
+            saved = json.loads(args.refit.read_text())
             ok = report_and_save(saved["samples"], saved.get("camera_serial"), args)
-        except ValueError as exc:
+        except (OSError, KeyError, TypeError, ValueError) as exc:
             print(f"Could not solve: {exc}", file=sys.stderr)
             ok = False
         return 0 if ok else 1
@@ -547,7 +634,7 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped. Recorded spots are saved in", args.samples)
     except RuntimeError as exc:
-        print(f"Camera error: {exc}", file=sys.stderr)
+        print(f"Calibration error: {exc}", file=sys.stderr)
         return 1
     return 0
 
