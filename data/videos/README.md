@@ -46,3 +46,31 @@ docker run --rm --network none -v "$PWD":/app:ro -v "$PWD/ros_runs":/out \
 ```
 
 The videos show the lab and the person throwing.
+
+## 2026-11-27: six throws into the box, from the camera stand
+
+Six throws that the live tracker saw end up in the box, recorded on 2026-11-27 with
+the same camera on its fixed stand, at **848 × 480 and 60 fps** (RGB auto exposure)
+with `scripts/measure_ball.py --fps 60 --ball orange`. Same folder layout as above.
+
+**Use the stand calibration, not the one in this branch:** `calibration/camera_to_base.json`
+from `main` at commit `e54f9dc` ("updated calibration", 12 poses, 25 mm RMS check
+error). The 2026-11-25 calibration is for the old camera position.
+
+| Throw | Frames | Live tracker had the ball | Positions from depth | Arm |
+|---|---|---|---|---|
+| 131140 | 230 | 5 | 3 | **not at home** (held about 0.28 m higher) |
+| 131159 | 183 | 15 | 8 | **not at home** |
+| 131248 | 224 | 20 | 15 | **not at home** |
+| 132240 | 177 | 9 | 3 | home |
+| 132410 | 80 | 24 | 13 | home |
+| 132429 | 198 | 11 | 9 | home |
+
+The arm was not moving during any throw, and no joint data was recorded: a simulation
+of the `131…` throws that starts the arm at home does not match the real scene. The
+saved frame rate is about 51 fps (the recorder skips frames it has not finished
+tracking), and the ball still blurs in flight, so most tracked positions are near the
+hand and the box.
+
+Replay a ROS pipeline run of one of these in MuJoCo with
+`scripts/ros_run_to_sim.py <run folder> --recording data/videos/throw_... --calibration <stand calibration>`.
