@@ -203,6 +203,62 @@ class CameraTopics:
         self.in_box.publish(self.Int8(data=in_box))
 
 
+def preview_lines(out, found):
+    """Describe this frame's three published camera topics."""
+    status_names = {NO_BALL: 'no active ball', HIDDEN: 'hidden',
+                    VISIBLE: 'visible, velocity unavailable', TRACKED: 'tracked'}
+    box_names = {UNKNOWN: 'unknown', OUTSIDE: 'outside', INSIDE: 'inside/probably inside'}
+    status, in_box = out['status'], out['in_box']
+    lines = [f"/ball_tracking_status: {status} ({status_names.get(status, 'invalid')})",
+             f"/ball_in_box: {in_box} ({box_names.get(in_box, 'invalid')})"]
+    if out['position'] is None:
+        lines.append('/ball_state: not published on this frame')
+    else:
+        x, y, z = out['position']
+        source = getattr(found, 'source', 'unknown')
+        lines.append(f'/ball_state XYZ: {x:+.3f} {y:+.3f} {z:+.3f} m (base; {source})')
+        if out['velocity'] is None:
+            lines.append('/ball_state velocity: 0 0 0 m/s (estimate not ready)')
+        else:
+            vx, vy, vz = out['velocity']
+            lines.append(f'/ball_state velocity: {vx:+.2f} {vy:+.2f} {vz:+.2f} m/s (base)')
+    if out.get('rejection'):
+        lines.append(f"Rejected: {out['rejection']}")
+    return lines
+
+
+def trajectory_preview(rs, cv2, np, image, intrinsics, camera_to_base, out, height):
+    """Draw the same ballistic prediction used for the model observation."""
+    from catchbox.hardware.observation import interception
+    if out['status'] != TRACKED or out['in_box'] == INSIDE:
+        return image, 'Prediction: unavailable'
+    p, v = out['position'], out['velocity']
+    prediction = interception(p, v, height)
+    if prediction is None:
+        return image, 'Prediction: no descending crossing'
+    landing, _, duration = prediction
+    canvas = image.copy()
+    previous = None
+    for t in np.linspace(0., duration, 41):
+        base = p + v * t + np.array([0., 0., -0.5 * GRAVITY * t * t])
+        camera = camera_to_base.rotation.T @ (base - camera_to_base.translation)
+        if camera[2] <= 0:
+            previous = None
+            continue
+        uv = rs.rs2_project_point_to_pixel(intrinsics, camera.tolist())
+        if not np.isfinite(uv).all() or not (0 <= uv[0] < image.shape[1] and 0 <= uv[1] < image.shape[0]):
+            previous = None
+            continue
+        pixel = tuple(int(round(x)) for x in uv)
+        if previous is not None:
+            cv2.line(canvas, previous, pixel, (0, 255, 255), 2, cv2.LINE_AA)
+        previous = pixel
+    if previous is not None:
+        cv2.drawMarker(canvas, previous, (0, 0, 255), cv2.MARKER_CROSS, 18, 2)
+    return canvas, (f'Predicted crossing XYZ: {landing[0]:+.3f} {landing[1]:+.3f} '
+                    f'{landing[2]:+.3f} m, {duration:.2f} s')
+
+
 def main():
     import rospy
 
@@ -211,6 +267,9 @@ def main():
                         help="Camera-to-Franka-base calibration JSON (camera_to_base.json)")
     parser.add_argument("--preview", action="store_true",
                         help="Also show the camera window (needs a desktop)")
+    from catchbox.hardware.calibration import DEFAULT_CONFIG
+    parser.add_argument("--robot-config", default=str(DEFAULT_CONFIG),
+                        help="Robot configuration used by the model (for preview prediction height)")
     parser.set_defaults(ball="orange")
     args = parser.parse_args(rospy.myargv()[1:])
     mb.apply_settings(parser, args)
@@ -221,6 +280,13 @@ def main():
     from calibrate_camera import load_calibration
     from check_camera import camera_session, print_stream_profiles
     from camera_controls import rgb_sensor_settings, color_frame_metadata
+
+    if args.preview:
+        import yaml
+        from catchbox.hardware.policy_frame import PolicyFrame
+        with open(args.robot_config) as config_file:
+            frame = PolicyFrame(yaml.safe_load(config_file))
+        prediction_height = float(frame.sim_start[2] + frame.offset[2])
 
     rospy.init_node("catchbox_ball_vision")
     topics = CameraTopics(rospy)
@@ -287,14 +353,11 @@ def main():
                 if args.preview:
                     names = {NO_BALL: "NO BALL", HIDDEN: "HIDDEN", VISIBLE: "VISIBLE",
                              TRACKED: "TRACKED"}
-                    lines = [f"in box: {out['in_box']}  (-1 unknown, 0 out, 1 in)"]
-                    if out["position"] is not None:
-                        x, y, z = out["position"]
-                        lines.append(f"base XYZ  {x:+.3f} {y:+.3f} {z:+.3f} m")
-                    if out["velocity"] is not None:
-                        vx, vy, vz = out["velocity"]
-                        lines.append(f"velocity  {vx:+.2f} {vy:+.2f} {vz:+.2f} m/s")
-                    key = mb.draw(cv2, np, image, shown, f"ROS: {names[out['status']]}",
+                    lines = preview_lines(out, found)
+                    preview_image, prediction_line = trajectory_preview(
+                        rs, cv2, np, image, intrinsics, camera_to_base, out, prediction_height)
+                    lines.append(prediction_line)
+                    key = mb.draw(cv2, np, preview_image, shown, f"ROS: {names[out['status']]}",
                                   mb.GREEN if out["status"] > 0 else mb.YELLOW,
                                   f"status {out['status']}", lines, mb.GREEN,
                                   box=tracker.lock.box, box_label=tracker.box_info,
