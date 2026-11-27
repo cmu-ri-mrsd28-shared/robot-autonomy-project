@@ -137,7 +137,7 @@ class BoxArm:
     def go_home(self):
         """Joint move to the recorded home; this also fixes the box orientation."""
         start = self.opening()
-        duration = max(5.0, 2 * np.linalg.norm(start - self.center) / self.speed)
+        duration = float(max(5.0, 2 * np.linalg.norm(start - self.center) / self.speed))
         print(f'Home: joint move to recorded home joints, {duration:.1f} s', flush=True)
         self.arm.goto_joints(self.home.tolist(), duration=duration, ignore_errors=False)
         pose = self.arm.get_pose()
