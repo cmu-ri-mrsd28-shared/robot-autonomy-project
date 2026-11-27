@@ -46,3 +46,18 @@ def test_recording_keeps_frame_metadata():
     assert recorder.rows[0]['rgb_exposure_us']==3000
     assert recorder.rows[0]['rgb_gain']==80
     assert {'rgb_exposure_us','rgb_gain'} <= set(mb.RECORD_FIELDS)
+
+
+def test_frames_are_drained_before_manual_settings():
+    # Setting RGB exposure right after start blanks the D435 depth stream.
+    sensor=Sensor();profile=N(get_device=lambda:N(query_sensors=lambda:[sensor]))
+    events=[]
+    pipeline=N(wait_for_frames=lambda:events.append(('frame',len(sensor.writes))))
+    with rgb_sensor_settings(RS,profile,exposure=30.,pipeline=pipeline,warmup_frames=4):
+        pass
+    assert len(events)==4 and all(writes==0 for _,writes in events)
+
+
+def test_default_settings_skip_warmup():
+    pipeline=N(wait_for_frames=lambda:(_ for _ in ()).throw(AssertionError('no warm-up expected')))
+    with rgb_sensor_settings(RS,object(),pipeline=pipeline):pass

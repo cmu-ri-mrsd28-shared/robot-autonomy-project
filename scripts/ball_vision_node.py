@@ -225,8 +225,8 @@ def main():
     rospy.init_node("catchbox_ball_vision")
     topics = CameraTopics(rospy)
 
-    with camera_session(rs, fps=args.fps) as (pipeline, profile), \
-         rgb_sensor_settings(rs, profile, args.rgb_exposure, args.rgb_gain):
+    with camera_session(rs, fps=args.fps, width=args.width, height=args.height) as (pipeline, profile), \
+         rgb_sensor_settings(rs, profile, args.rgb_exposure, args.rgb_gain, pipeline=pipeline):
         print_stream_profiles(rs, profile)
         serial = profile.get_device().get_info(rs.camera_info.serial_number)
         camera_to_base = load_calibration(args.calibration, serial)

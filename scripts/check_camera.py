@@ -51,7 +51,7 @@ def print_sample_point(rs, depth, x, y):
 
 
 @contextmanager
-def camera_session(rs, fps=30):
+def camera_session(rs, fps=30, width=640, height=480):
     """Open the first RealSense device and close its streams on exit."""
     context = rs.context()
     devices = context.query_devices()
@@ -74,8 +74,8 @@ def camera_session(rs, fps=30):
     # Request equal rates for both streams so the SDK can pair fresh frames.
     config = rs.config()
     config.enable_device(serial)
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, fps)
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, fps)
+    config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
+    config.enable_stream(rs.stream.depth, width, height, rs.format.z16, fps)
     pipeline = rs.pipeline(context)
     profile = pipeline.start(config)
     try:

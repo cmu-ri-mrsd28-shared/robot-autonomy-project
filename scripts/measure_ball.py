@@ -305,12 +305,12 @@ def circle_from_edge(np, contour, width, height):
     x0, y0 = max(0, int(u - r)), max(0, int(v - r))
     x1, y1 = min(width, int(u + r) + 1), min(height, int(v + r) + 1)
     disk = np.zeros((y1 - y0, x1 - x0), np.uint8)
-    cv2.circle(disk, (round(u) - x0, round(v) - y0), round(r), 1, -1)
+    cv2.circle(disk, (int(round(u)) - x0, int(round(v)) - y0), int(round(r)), 1, -1)
     blob = np.zeros_like(disk)
     cv2.drawContours(blob, [contour], -1, 1, cv2.FILLED, offset=(-x0, -y0))
     if disk.sum() == 0 or (disk & blob).sum() < 0.7 * disk.sum():
         return None
-    return Detection(round(u), round(v), r)
+    return Detection(int(round(u)), int(round(v)), float(r))
 
 
 def edge_cut_candidate(np, contour, width, height):
@@ -1060,15 +1060,15 @@ CAPTURE_FRAMES = 10
 BUTTON = (230, 52)   # capture button size (w, h), drawn at the top-right of the panel
 
 
-def button_rect(width):
+def button_rect(width, image_height):
     """Capture button (x0, y0, x1, y1) in window pixels: top-right of the panel."""
-    top = round(480 * SCALE)
+    top = round(image_height * SCALE)
     return width - BUTTON[0] - 12, top + 10, width - 12, top + 10 + BUTTON[1]
 
 
-def record_rect(width):
+def record_rect(width, image_height):
     """Record button (x0, y0, x1, y1) in window pixels: left of the capture button."""
-    x0, y0, _, y1 = button_rect(width)
+    x0, y0, _, y1 = button_rect(width, image_height)
     return x0 - 12 - BUTTON[0], y0, x0 - 12, y1
 
 
@@ -1083,7 +1083,7 @@ def draw(cv2, np, image, ball, banner, banner_color, headline, lines, color, box
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, BLUE, 2, cv2.LINE_AA)
     if ball is not None:
         center = (round(ball.u * SCALE), round(ball.v * SCALE))
-        cv2.circle(preview, center, round(ball.radius * SCALE), color, 3)
+        cv2.circle(preview, center, int(round(ball.radius * SCALE)), color, 3)
         cv2.circle(preview, center, 4, color, -1)
     cv2.rectangle(preview, (0, 0), (preview.shape[1], 52), (0, 0, 0), -1)
     cv2.putText(preview, banner, (14, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.1, banner_color, 3,
@@ -1098,14 +1098,14 @@ def draw(cv2, np, image, ball, banner, banner_color, headline, lines, color, box
     if button_text is None:   # no capture button (e.g. the ROS node's preview)
         cv2.imshow(WINDOW, shown)
         return cv2.waitKey(1) & 0xFF
-    x0, y0, x1, y1 = button_rect(shown.shape[1])
+    x0, y0, x1, y1 = button_rect(shown.shape[1], image.shape[0])
     busy = button_text != "CAPTURE 10"
     cv2.rectangle(shown, (x0, y0), (x1, y1), (0, 140, 255) if busy else (90, 90, 90), -1)
     cv2.rectangle(shown, (x0, y0), (x1, y1), WHITE, 2)
     cv2.putText(shown, button_text, (x0 + 14, y1 - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.85, WHITE, 2,
                 cv2.LINE_AA)
     if record_text is not None:
-        x0, y0, x1, y1 = record_rect(shown.shape[1])
+        x0, y0, x1, y1 = record_rect(shown.shape[1], image.shape[0])
         recording = record_text != "RECORD"
         cv2.rectangle(shown, (x0, y0), (x1, y1), (0, 0, 210) if recording else (90, 90, 90), -1)
         cv2.rectangle(shown, (x0, y0), (x1, y1), WHITE, 2)
@@ -1332,7 +1332,7 @@ def measure(rs, cv2, np, pipeline, profile, args):
                   flush=True)
     marking = {"on": False, "start": None, "now": None}
     capture = {"left": 0, "folder": None, "count": 0, "found": 0}
-    window_width = round(640 * SCALE)
+    window_width = round(intrinsics.width * SCALE)
     recorder = Recorder(cv2, np, args.record_dir, intrinsics,
                         profile.get_device().get_info(rs.camera_info.serial_number), args.fps)
     toggle_record = []
@@ -1350,11 +1350,11 @@ def measure(rs, cv2, np, pipeline, profile, args):
     cv2.namedWindow(WINDOW)
 
     def on_mouse(event, x, y, flags, userdata):
-        bx0, by0, bx1, by1 = button_rect(window_width)
+        bx0, by0, bx1, by1 = button_rect(window_width, intrinsics.height)
         if event == cv2.EVENT_LBUTTONDOWN and bx0 <= x <= bx1 and by0 <= y <= by1:
             start_capture()
             return
-        rx0, ry0, rx1, ry1 = record_rect(window_width)
+        rx0, ry0, rx1, ry1 = record_rect(window_width, intrinsics.height)
         if event == cv2.EVENT_LBUTTONDOWN and rx0 <= x <= rx1 and ry0 <= y <= ry1:
             toggle_record.append(True)
             return
@@ -1679,6 +1679,9 @@ def build_parser(description=__doc__):
                         help="Manual RGB exposure in raw SDK units; default leaves auto setting unchanged")
     parser.add_argument("--rgb-gain", type=float, default=None,
                         help="Manual RGB gain in raw SDK units; default unchanged")
+    parser.add_argument("--width", type=int, default=848,
+                        help="Color and depth width: 848 (16:9, ~69 deg wide, default) or 640 (4:3, ~55 deg)")
+    parser.add_argument("--height", type=int, default=480, help="Color and depth height (default 480)")
     parser.add_argument("--ball", choices=("white", "orange"), default="white",
                         help="Ball color (default white)")
     parser.add_argument("--hue-min", type=int, default=6,
@@ -1770,9 +1773,10 @@ def main():
         return 1
 
     try:
-        with camera_session(rs, fps=args.fps) as (pipeline, profile):
+        with camera_session(rs, fps=args.fps, width=args.width, height=args.height) as (pipeline, profile):
             print_stream_profiles(rs, profile)
-            with rgb_sensor_settings(rs, profile, args.rgb_exposure, args.rgb_gain):
+            with rgb_sensor_settings(rs, profile, args.rgb_exposure, args.rgb_gain,
+                                     pipeline=pipeline):
                 measure(rs, cv2, np, pipeline, profile, args)
     except KeyboardInterrupt:
         print("\nStopped.")

@@ -43,7 +43,7 @@ import numpy as np  # noqa: E402
 
 GRAVITY = 9.81
 BOX_DEPTH_M = 0.15          # camera-facing box depth used by measure_ball (front to back)
-W, H = 640, 480
+W, H = 640, 480  # replaced by the recording's size in main()
 # Recovering the missed frames from the video.
 STREAK_HSV_LOW = (0, 120, 160)   # orange, allowing blur (paler); bright, unlike skin
 STREAK_HSV_HIGH = (25, 255, 255)
@@ -271,7 +271,7 @@ def box_from_ball(path, entry, camera):
     return camera.to_base(u, v, z)
 
 
-def camera_view(mujoco, calibration, fy):
+def camera_view(mujoco, calibration, fy, height=None):
     """A MuJoCo free camera at the real camera's pose (the free camera has no roll)."""
     forward = calibration.rotation[:, 2]
     cam = mujoco.MjvCamera()
@@ -280,7 +280,7 @@ def camera_view(mujoco, calibration, fy):
     cam.lookat[:] = calibration.translation + forward * cam.distance
     cam.azimuth = math.degrees(math.atan2(forward[1], forward[0]))
     cam.elevation = math.degrees(math.asin(np.clip(forward[2], -1, 1)))
-    return cam, 2 * math.degrees(math.atan(H / 2 / fy))
+    return cam, 2 * math.degrees(math.atan((height or H) / 2 / fy))
 
 
 def rounded(values, digits=4):
@@ -308,6 +308,8 @@ def main():
 
     folder = args.recording
     meta, rows = load(folder)
+    global W, H
+    W, H = int(meta["intrinsics"]["width"]), int(meta["intrinsics"]["height"])
     calibration = load_calibration(args.calibration, meta["camera_serial"])
     camera = Camera(calibration, meta["intrinsics"])
     frames = read_video(cv2, folder / "color.mp4")
@@ -338,6 +340,8 @@ def main():
     mujoco.mj_forward(m, d)
     placed = d.site_xpos[sim.site].copy()
 
+    m.vis.global_.offwidth = max(m.vis.global_.offwidth, W)
+    m.vis.global_.offheight = max(m.vis.global_.offheight, H)
     renderer = mujoco.Renderer(m, H, W)
     opt = mujoco.MjvOption()
     opt.geomgroup[:] = 0

@@ -18,9 +18,19 @@ def _color_sensor(rs, profile):
     raise RuntimeError('Could not find the RealSense RGB sensor')
 
 
+# Changing RGB exposure/gain in the first frames after pipeline.start() leaves the
+# D435 depth stream all zeros until the camera restarts (seen on firmware 5.10.3,
+# 848x480 at 60 fps). Draining half a second of frames first avoids it.
+WARMUP_FRAMES = 30
+
+
 @contextmanager
-def rgb_sensor_settings(rs, profile, exposure=None, gain=None):
+def rgb_sensor_settings(rs, profile, exposure=None, gain=None, pipeline=None,
+                        warmup_frames=WARMUP_FRAMES):
     """Apply optional raw SDK values during streaming, then restore old settings.
+
+    Pass the running `pipeline` so frames are drained before the change; without
+    it, manual settings applied right after start can blank the depth stream.
 
     RGB exposure control units vary by device/backend; use per-frame actual
     exposure metadata in microseconds to determine what the camera delivered.
@@ -39,6 +49,9 @@ def rgb_sensor_settings(rs, profile, exposure=None, gain=None):
         limits=sensor.get_option_range(option)
         if not limits.min <= value <= limits.max:
             raise ValueError('%s %.3f outside device range %.3f..%.3f' % (label,value,limits.min,limits.max))
+    if pipeline is not None:
+        for _ in range(warmup_frames):
+            pipeline.wait_for_frames()
     saved={rs.option.enable_auto_exposure:sensor.get_option(rs.option.enable_auto_exposure)}
     for option,value,_ in requested:
         if value is not None:saved[option]=sensor.get_option(option)
